@@ -2,7 +2,10 @@ package com.grxt.wsproxy;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -19,28 +22,28 @@ import android.view.ViewGroup;
 import android.widget.*;
 
 public final class MainActivity extends Activity {
-    private static final int BG = Color.rgb(10, 17, 31);
-    private static final int CARD = Color.rgb(18, 29, 48);
-    private static final int CARD_SOFT = Color.rgb(23, 36, 58);
-    private static final int TEXT = Color.rgb(244, 248, 255);
-    private static final int MUTED = Color.rgb(151, 166, 190);
-    private static final int BLUE = Color.rgb(42, 120, 255);
-    private static final int BLUE_DARK = Color.rgb(28, 91, 211);
-    private static final int GREEN = Color.rgb(67, 211, 139);
-    private static final int RED = Color.rgb(255, 92, 110);
+    private static final int BG = Color.rgb(7, 13, 24);
+    private static final int CARD = Color.rgb(15, 27, 45);
+    private static final int CARD_2 = Color.rgb(20, 35, 57);
+    private static final int TEXT = Color.rgb(246, 249, 255);
+    private static final int MUTED = Color.rgb(145, 161, 186);
+    private static final int BLUE = Color.rgb(25, 112, 255);
+    private static final int BLUE_2 = Color.rgb(17, 82, 203);
+    private static final int GREEN = Color.rgb(53, 218, 139);
+    private static final int RED = Color.rgb(255, 91, 105);
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private TextView status;
     private TextView route;
-    private TextView routeHint;
+    private TextView details;
     private TextView error;
-    private TextView statusDot;
     private Button toggle;
     private Button telegram;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 10);
         }
         getWindow().setStatusBarColor(BG);
@@ -49,89 +52,80 @@ public final class MainActivity extends Activity {
         handler.post(refreshTask);
     }
 
-    private ScrollView buildUi() {
-        int side = dp(20);
+    private View buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(side, dp(22), side, dp(30));
+        root.setPadding(dp(18), dp(22), dp(18), dp(30));
         root.setBackgroundColor(BG);
 
-        TextView brand = text("GRXT", 13, true, BLUE);
-        brand.setLetterSpacing(0.14f);
+        TextView brand = text("GRXT WS Proxy", 30, true, TEXT);
         root.addView(brand);
-
-        TextView title = text("WS Proxy", 32, true, TEXT);
-        add(root, title, 0, dp(2), 0, 0);
-
-        TextView sub = text("Telegram через локальный MTProto → WebSocket/TLS", 14, false, MUTED);
-        add(root, sub, 0, dp(6), 0, dp(22));
+        TextView sub = text("Локальный Telegram proxy · Android", 14, false, MUTED);
+        add(root, sub, 0, dp(5), 0, dp(20));
 
         LinearLayout statusCard = card();
-        statusCard.setPadding(dp(18), dp(18), dp(18), dp(18));
-
-        LinearLayout statusRow = new LinearLayout(this);
-        statusRow.setOrientation(LinearLayout.HORIZONTAL);
-        statusRow.setGravity(Gravity.CENTER_VERTICAL);
-        statusDot = text("●", 18, true, MUTED);
-        statusRow.addView(statusDot, new LinearLayout.LayoutParams(dp(26), ViewGroup.LayoutParams.WRAP_CONTENT));
-        status = text("Прокси выключен", 20, true, TEXT);
-        statusRow.addView(status, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        statusCard.addView(statusRow);
-
+        statusCard.setPadding(dp(18), dp(17), dp(18), dp(17));
+        status = text("Прокси выключен", 21, true, TEXT);
+        statusCard.addView(status);
         route = text("Маршрут: выключен", 15, true, TEXT);
-        add(statusCard, route, 0, dp(15), 0, 0);
-        routeHint = text("После запуска приложение само проверит доступный маршрут.", 13, false, MUTED);
-        add(statusCard, routeHint, 0, dp(5), 0, 0);
+        add(statusCard, route, 0, dp(13), 0, 0);
+        details = text("Локальный адрес: 127.0.0.1:1080", 13, false, MUTED);
+        add(statusCard, details, 0, dp(7), 0, 0);
+        TextView core = text("Режим: SOCKS5 → WebSocket/TLS → Telegram DC", 13, false, MUTED);
+        add(statusCard, core, 0, dp(5), 0, 0);
+        root.addView(statusCard, matchWrap());
 
-        TextView endpoint = text("127.0.0.1:1443", 13, false, MUTED);
-        add(statusCard, endpoint, 0, dp(13), 0, 0);
-        root.addView(statusCard, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        toggle = new Button(this);
-        toggle.setText("ВКЛЮЧИТЬ ПРОКСИ");
-        toggle.setTextSize(17);
-        toggle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        toggle.setTextColor(Color.WHITE);
-        toggle.setAllCaps(false);
-        toggle.setGravity(Gravity.CENTER);
-        toggle.setElevation(dp(6));
-        toggle.setBackground(rounded(BLUE, 18));
+        toggle = mainButton("ВКЛЮЧИТЬ ПРОКСИ", BLUE);
         toggle.setOnClickListener(v -> {
             toggle.setEnabled(false);
             if (ProxyService.running) ProxyService.stop(this); else ProxyService.start(this);
-            handler.postDelayed(() -> {
-                refresh();
-                toggle.setEnabled(true);
-            }, 450);
+            handler.postDelayed(() -> { refresh(); toggle.setEnabled(true); }, 500);
         });
-        LinearLayout.LayoutParams startParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(72));
-        startParams.setMargins(0, dp(18), 0, 0);
-        root.addView(toggle, startParams);
+        LinearLayout.LayoutParams big = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(76));
+        big.setMargins(0, dp(18), 0, 0);
+        root.addView(toggle, big);
 
-        telegram = new Button(this);
-        telegram.setText("Подключить Telegram");
-        telegram.setTextSize(16);
-        telegram.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        telegram.setTextColor(TEXT);
-        telegram.setAllCaps(false);
-        telegram.setBackground(rounded(CARD_SOFT, 16));
+        telegram = mainButton("ПОДКЛЮЧИТЬ TELEGRAM", CARD_2);
+        telegram.setTextColor(Color.rgb(95, 163, 255));
         telegram.setOnClickListener(v -> connectTelegram());
-        LinearLayout.LayoutParams tgParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58));
-        tgParams.setMargins(0, dp(12), 0, 0);
-        root.addView(telegram, tgParams);
+        LinearLayout.LayoutParams tg = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(60));
+        tg.setMargins(0, dp(11), 0, 0);
+        root.addView(telegram, tg);
 
-        TextView section = text("Как это работает", 18, true, TEXT);
-        add(root, section, 0, dp(28), 0, dp(10));
+        TextView quick = text("Быстрые действия", 18, true, TEXT);
+        add(root, quick, 0, dp(25), 0, dp(9));
 
-        LinearLayout infoCard = card();
-        infoCard.setPadding(dp(18), dp(16), dp(18), dp(16));
-        infoCard.addView(step("1", "Включи прокси", "GRXT проверит доступный маршрут автоматически."));
-        infoCard.addView(step("2", "Подключи Telegram", "Нажми кнопку выше и подтверди MTProto-прокси."));
-        infoCard.addView(step("3", "Можно закрыть приложение", "Сервис продолжит работу в фоне и останется в уведомлениях."));
-        root.addView(infoCard);
+        LinearLayout grid = new LinearLayout(this);
+        grid.setOrientation(LinearLayout.VERTICAL);
+        addActionRow(grid,
+                action("РЕСТАРТ", v -> { ProxyService.restart(this); toast("Прокси перезапускается"); }),
+                action("ПРОВЕРИТЬ МАРШРУТ", v -> { ProxyService.restart(this); toast("Маршруты проверяются заново"); }));
+        addActionRow(grid,
+                action("СКОПИРОВАТЬ АДРЕС", v -> copyAddress()),
+                action("СТАТУС", v -> showStatus()));
+        addActionRow(grid,
+                action("ОТКРЫТЬ TELEGRAM", v -> connectTelegram()),
+                action("ОСТАНОВИТЬ", v -> ProxyService.stop(this)));
+        root.addView(grid);
+
+        LinearLayout check = card();
+        check.setPadding(dp(18), dp(16), dp(18), dp(16));
+        TextView ct = text("Текущее состояние", 17, true, TEXT);
+        check.addView(ct);
+        TextView c1 = text("WebSocket: автоматический выбор", 13, false, MUTED);
+        add(check, c1, 0, dp(10), 0, 0);
+        TextView c2 = text("Cloudflare: резервный маршрут", 13, false, MUTED);
+        add(check, c2, 0, dp(5), 0, 0);
+        TextView c3 = text("TCP: последний fallback", 13, false, MUTED);
+        add(check, c3, 0, dp(5), 0, 0);
+        add(root, check, 0, dp(18), 0, 0);
 
         error = text("", 13, true, RED);
-        add(root, error, 0, dp(16), 0, 0);
+        add(root, error, 0, dp(14), 0, 0);
+
+        TextView note = text("GRXT сначала пробует WebSocket, затем Cloudflare, затем обычный TCP. Telegram подключается к локальному SOCKS5 без отдельного MTProxy-secret.", 12, false, MUTED);
+        note.setLineSpacing(0, 1.15f);
+        add(root, note, 0, dp(15), 0, 0);
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -140,96 +134,111 @@ public final class MainActivity extends Activity {
         return scroll;
     }
 
-    private LinearLayout step(String n, String title, String desc) {
+    private Button action(String label, View.OnClickListener listener) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextSize(12);
+        b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        b.setTextColor(TEXT);
+        b.setGravity(Gravity.CENTER);
+        b.setBackground(rounded(CARD_2, 15));
+        b.setOnClickListener(listener);
+        return b;
+    }
+
+    private void addActionRow(LinearLayout grid, Button left, Button right) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, dp(7), 0, dp(7));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(58), 1f);
+        lp.setMargins(0, 0, dp(5), dp(8));
+        row.addView(left, lp);
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(0, dp(58), 1f);
+        rp.setMargins(dp(5), 0, 0, dp(8));
+        row.addView(right, rp);
+        grid.addView(row, matchWrap());
+    }
 
-        TextView badge = text(n, 14, true, Color.WHITE);
-        badge.setGravity(Gravity.CENTER);
-        badge.setBackground(rounded(BLUE_DARK, 12));
-        row.addView(badge, new LinearLayout.LayoutParams(dp(36), dp(36)));
-
-        LinearLayout copy = new LinearLayout(this);
-        copy.setOrientation(LinearLayout.VERTICAL);
-        TextView t = text(title, 15, true, TEXT);
-        TextView d = text(desc, 13, false, MUTED);
-        d.setLineSpacing(0, 1.1f);
-        copy.addView(t);
-        add(copy, d, 0, dp(3), 0, 0);
-        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-        cp.setMargins(dp(12), 0, 0, 0);
-        row.addView(copy, cp);
-        return row;
+    private Button mainButton(String label, int color) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextSize(17);
+        b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        b.setTextColor(Color.WHITE);
+        b.setGravity(Gravity.CENTER);
+        b.setElevation(dp(5));
+        b.setBackground(rounded(color, 18));
+        return b;
     }
 
     private void connectTelegram() {
-        telegram.setEnabled(false);
-        telegram.setText("Подготовка прокси…");
-        if (!ProxyService.running) ProxyService.start(this);
-        waitForProxyAndOpen(0);
+        if (!ProxyService.running) {
+            ProxyService.start(this);
+            telegram.setEnabled(false);
+            telegram.setText("ЗАПУСК ПРОКСИ…");
+            waitAndOpenTelegram(0);
+        } else {
+            openTelegram();
+        }
     }
 
-    private void waitForProxyAndOpen(int attempt) {
+    private void waitAndOpenTelegram(int n) {
         if (ProxyService.running) {
-            telegram.setText("Подключить Telegram");
             telegram.setEnabled(true);
-            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(Settings.telegramLink(this)));
-            try {
-                startActivity(i);
-            } catch (ActivityNotFoundException e) {
-                Toast.makeText(this, "Telegram не найден", Toast.LENGTH_LONG).show();
-            }
+            telegram.setText("ПОДКЛЮЧИТЬ TELEGRAM");
+            openTelegram();
             return;
         }
+        if (n >= 40) {
+            telegram.setEnabled(true);
+            telegram.setText("ПОДКЛЮЧИТЬ TELEGRAM");
+            toast("Прокси не запустился. Проверь ошибку на главном экране.");
+            return;
+        }
+        handler.postDelayed(() -> waitAndOpenTelegram(n + 1), 125);
+    }
 
-        if (attempt >= 30) {
-            telegram.setText("Подключить Telegram");
-            telegram.setEnabled(true);
-            Toast.makeText(this, "Прокси не успел запуститься. Проверь ошибку на экране.", Toast.LENGTH_LONG).show();
-            return;
-        }
-        handler.postDelayed(() -> waitForProxyAndOpen(attempt + 1), 150);
+    private void openTelegram() {
+        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(Settings.telegramLink(this)));
+        try { startActivity(i); }
+        catch (ActivityNotFoundException e) { toast("Telegram не найден"); }
+    }
+
+    private void copyAddress() {
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        cm.setPrimaryClip(ClipData.newPlainText("GRXT proxy", Settings.HOST + ":" + Settings.PORT));
+        toast("Скопировано: " + Settings.HOST + ":" + Settings.PORT);
+    }
+
+    private void showStatus() {
+        String text = "Сервис: " + (ProxyService.running ? "работает" : "выключен") +
+                "\nМаршрут: " + ProxyService.route +
+                (ProxyService.error.isEmpty() ? "" : "\nОшибка: " + ProxyService.error);
+        new AlertDialog.Builder(this)
+                .setTitle("GRXT WS Proxy")
+                .setMessage(text)
+                .setPositiveButton("OK", null)
+                .show();
     }
 
     private final Runnable refreshTask = new Runnable() {
         @Override public void run() {
             refresh();
-            handler.postDelayed(this, 700);
+            handler.postDelayed(this, 650);
         }
     };
 
     private void refresh() {
         boolean on = ProxyService.running;
-        status.setText(on ? "Прокси включён" : "Прокси выключен");
-        statusDot.setTextColor(on ? GREEN : MUTED);
-
-        String activeRoute = ProxyService.route == null ? "" : ProxyService.route.trim();
-        if (!on) {
-            route.setText("Маршрут: выключен");
-            routeHint.setText("Нажми большую синюю кнопку, чтобы запустить прокси.");
-        } else if (activeRoute.isEmpty() || "off".equalsIgnoreCase(activeRoute)) {
-            route.setText("Маршрут: Auto");
-            routeHint.setText("Проверяем доступность маршрутов…");
-        } else {
-            route.setText("Маршрут: " + activeRoute);
-            if (activeRoute.contains("поиск") || activeRoute.contains("провер")) {
-                routeHint.setText("Ищем рабочий WebSocket/Cloudflare маршрут…");
-            } else if (activeRoute.contains("Ошибка") || activeRoute.contains("недоступ")) {
-                routeHint.setText("Этот маршрут не сработал. GRXT попробует другой при новом соединении Telegram.");
-            } else if (activeRoute.contains("локальный порт")) {
-                routeHint.setText("Локальный MTProto готов. Можно нажимать «Подключить Telegram».");
-            } else {
-                routeHint.setText("Маршрут активен. Telegram должен выйти в онлайн.");
-            }
-        }
-
+        status.setText(on ? "Прокси активен" : "Прокси выключен");
+        status.setTextColor(on ? GREEN : TEXT);
+        String r = ProxyService.route == null ? "" : ProxyService.route.trim();
+        route.setText("Маршрут: " + (r.isEmpty() || "off".equalsIgnoreCase(r) ? (on ? "Auto" : "выключен") : r));
+        details.setText("Локальный адрес: " + Settings.HOST + ":" + Settings.PORT);
         toggle.setText(on ? "ВЫКЛЮЧИТЬ ПРОКСИ" : "ВКЛЮЧИТЬ ПРОКСИ");
-        toggle.setBackground(rounded(on ? Color.rgb(43, 52, 72) : BLUE, 18));
-        if (!"Подготовка прокси…".contentEquals(telegram.getText())) {
-            telegram.setEnabled(on);
-            telegram.setAlpha(on ? 1f : 0.55f);
-        }
+        toggle.setBackground(rounded(on ? BLUE_2 : BLUE, 18));
+        telegram.setAlpha(on ? 1f : 0.75f);
         error.setText(ProxyService.error.isEmpty() ? "" : "Ошибка: " + ProxyService.error);
     }
 
@@ -245,6 +254,7 @@ public final class MainActivity extends Activity {
         GradientDrawable d = new GradientDrawable();
         d.setColor(color);
         d.setCornerRadius(dp(radiusDp));
+        d.setStroke(dp(1), Color.rgb(35, 58, 88));
         return d;
     }
 
@@ -258,12 +268,17 @@ public final class MainActivity extends Activity {
     }
 
     private void add(LinearLayout root, View v, int l, int t, int r, int b) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        LinearLayout.LayoutParams p = matchWrap();
         p.setMargins(l, t, r, b);
         root.addView(v, p);
     }
 
+    private LinearLayout.LayoutParams matchWrap() {
+        return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
 
     @Override protected void onDestroy() {
         handler.removeCallbacks(refreshTask);
