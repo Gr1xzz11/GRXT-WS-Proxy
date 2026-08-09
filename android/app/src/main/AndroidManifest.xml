@@ -11,7 +11,18 @@
         android:theme="@style/AppTheme">
         <activity
             android:name=".AuthActivity"
-            android:exported="false" />
+            android:exported="true"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="grxt"
+                    android:host="auth"
+                    android:path="/confirmed" />
+            </intent-filter>
+        </activity>
 
         <activity
             android:name=".MainActivity"
