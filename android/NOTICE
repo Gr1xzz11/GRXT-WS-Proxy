@@ -1,0 +1,8 @@
+GRXT WS Proxy Android
+
+The Android MTProto/WebSocket transport implementation is adapted from concepts and behavior in:
+Flowseal/tg-ws-proxy
+https://github.com/Flowseal/tg-ws-proxy
+Pinned reference commit: b8a563400805c6993256b2333149fd847cfa5bbf
+
+The upstream project is distributed under the MIT License. Copyright and license notices from the upstream project must be preserved when applicable.
