@@ -36,12 +36,15 @@ public final class MainActivity extends Activity {
     private TextView status;
     private TextView route;
     private TextView details;
+    private TextView authState;
     private TextView error;
     private Button toggle;
     private Button telegram;
+    private GrxtAuth auth;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        auth = new GrxtAuth(this);
         if (Build.VERSION.SDK_INT >= 33 &&
                 checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 10);
@@ -52,16 +55,19 @@ public final class MainActivity extends Activity {
         handler.post(refreshTask);
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        if (status != null) refresh();
+    }
+
     private View buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(18), dp(22), dp(18), dp(30));
         root.setBackgroundColor(BG);
 
-        TextView brand = text("GRXT WS Proxy", 30, true, TEXT);
-        root.addView(brand);
-        TextView sub = text("Локальный Telegram MTProto · Android", 14, false, MUTED);
-        add(root, sub, 0, dp(5), 0, dp(20));
+        root.addView(text("GRXT WS Proxy", 30, true, TEXT));
+        add(root, text("Telegram MTProto · GRXT Cloud", 14, false, MUTED), 0, dp(5), 0, dp(20));
 
         LinearLayout statusCard = card();
         statusCard.setPadding(dp(18), dp(17), dp(18), dp(17));
@@ -71,9 +77,20 @@ public final class MainActivity extends Activity {
         add(statusCard, route, 0, dp(13), 0, 0);
         details = text("Локальный адрес: 127.0.0.1:1443", 13, false, MUTED);
         add(statusCard, details, 0, dp(7), 0, 0);
-        TextView core = text("Режим: MTProto → WebSocket/TLS → Telegram DC", 13, false, MUTED);
-        add(statusCard, core, 0, dp(5), 0, 0);
+        add(statusCard, text("Режим: MTProto → WebSocket/TLS → Telegram DC", 13, false, MUTED), 0, dp(5), 0, 0);
         root.addView(statusCard, matchWrap());
+
+        LinearLayout account = card();
+        account.setPadding(dp(18), dp(15), dp(18), dp(15));
+        TextView accountTitle = text("GRXT Auth", 17, true, TEXT);
+        account.addView(accountTitle);
+        authState = text("Гостевой режим · GRXT ID: —", 13, false, MUTED);
+        add(account, authState, 0, dp(8), 0, 0);
+        Button accountButton = action("ОТКРЫТЬ GRXT AUTH", v -> openAuth());
+        LinearLayout.LayoutParams accountLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        accountLp.setMargins(0, dp(12), 0, 0);
+        account.addView(accountButton, accountLp);
+        add(root, account, 0, dp(12), 0, 0);
 
         toggle = mainButton("ВКЛЮЧИТЬ ПРОКСИ", BLUE);
         toggle.setOnClickListener(v -> {
@@ -107,28 +124,23 @@ public final class MainActivity extends Activity {
                 action("НОВЫЙ SECRET", v -> regenerateSecret()),
                 action("СТАТУС", v -> showStatus()));
         addActionRow(grid,
-                action("ОТКРЫТЬ TELEGRAM", v -> connectTelegram()),
+                action("GRXT AUTH", v -> openAuth()),
                 action("ОСТАНОВИТЬ", v -> ProxyService.stop(this)));
         root.addView(grid);
 
         LinearLayout check = card();
         check.setPadding(dp(18), dp(16), dp(18), dp(16));
-        TextView ct = text("Текущее состояние", 17, true, TEXT);
-        check.addView(ct);
-        TextView c1 = text("MTProto listener: 127.0.0.1:1443", 13, false, MUTED);
-        add(check, c1, 0, dp(10), 0, 0);
-        TextView c2 = text("WebSocket: прямой Telegram маршрут", 13, false, MUTED);
-        add(check, c2, 0, dp(5), 0, 0);
-        TextView c3 = text("Cloudflare: резервный WebSocket маршрут", 13, false, MUTED);
-        add(check, c3, 0, dp(5), 0, 0);
-        TextView c4 = text("TCP: последний fallback", 13, false, MUTED);
-        add(check, c4, 0, dp(5), 0, 0);
+        check.addView(text("Текущее состояние", 17, true, TEXT));
+        add(check, text("MTProto listener: 127.0.0.1:1443", 13, false, MUTED), 0, dp(10), 0, 0);
+        add(check, text("WebSocket: прямой Telegram маршрут", 13, false, MUTED), 0, dp(5), 0, 0);
+        add(check, text("Cloudflare: резервный WebSocket маршрут", 13, false, MUTED), 0, dp(5), 0, 0);
+        add(check, text("GRXT Cloud: Auth + устройство + статистика", 13, false, MUTED), 0, dp(5), 0, 0);
         add(root, check, 0, dp(18), 0, 0);
 
         error = text("", 13, true, RED);
         add(root, error, 0, dp(14), 0, 0);
 
-        TextView note = text("Telegram подключается к локальному MTProto на 127.0.0.1:1443. Secret хранится только на устройстве. GRXT сам выбирает WebSocket, Cloudflare или TCP fallback.", 12, false, MUTED);
+        TextView note = text("Аккаунт не обязателен. В гостевом режиме прокси работает локально. После входа GRXT Auth создаёт постоянный GRXT ID и привязывает устройство к Supabase.", 12, false, MUTED);
         note.setLineSpacing(0, 1.15f);
         add(root, note, 0, dp(15), 0, 0);
 
@@ -137,6 +149,10 @@ public final class MainActivity extends Activity {
         scroll.setBackgroundColor(BG);
         scroll.addView(root);
         return scroll;
+    }
+
+    private void openAuth() {
+        startActivity(new Intent(this, AuthActivity.class));
     }
 
     private Button action(String label, View.OnClickListener listener) {
@@ -190,7 +206,6 @@ public final class MainActivity extends Activity {
 
     private void waitAndOpenTelegram(int n) {
         if (ProxyService.running) {
-            // Give the exact 127.0.0.1 listener a short moment after service state flips.
             handler.postDelayed(() -> {
                 telegram.setEnabled(true);
                 telegram.setText("ПОДКЛЮЧИТЬ TELEGRAM");
@@ -239,10 +254,12 @@ public final class MainActivity extends Activity {
     }
 
     private void showStatus() {
+        String cloud = auth.isSignedIn() ? auth.grxtId() : "гость";
         String value = "Сервис: " + (ProxyService.running ? "работает" : "выключен") +
                 "\nАдрес: " + Settings.HOST + ":" + Settings.PORT +
                 "\nРежим: MTProto" +
                 "\nМаршрут: " + ProxyService.route +
+                "\nGRXT Auth: " + cloud +
                 (ProxyService.error.isEmpty() ? "" : "\nОшибка: " + ProxyService.error);
         new AlertDialog.Builder(this)
                 .setTitle("GRXT WS Proxy")
@@ -265,6 +282,13 @@ public final class MainActivity extends Activity {
         String r = ProxyService.route == null ? "" : ProxyService.route.trim();
         route.setText("Маршрут: " + (r.isEmpty() || "off".equalsIgnoreCase(r) ? (on ? "Auto" : "выключен") : r));
         details.setText("Локальный адрес: " + Settings.HOST + ":" + Settings.PORT);
+        if (auth.isSignedIn()) {
+            authState.setText("Подключён · " + auth.grxtId() + " · " + auth.email());
+            authState.setTextColor(GREEN);
+        } else {
+            authState.setText("Гостевой режим · GRXT ID: —");
+            authState.setTextColor(MUTED);
+        }
         toggle.setText(on ? "ВЫКЛЮЧИТЬ ПРОКСИ" : "ВКЛЮЧИТЬ ПРОКСИ");
         toggle.setBackground(rounded(on ? BLUE_2 : BLUE, 18));
         telegram.setAlpha(on ? 1f : 0.75f);
