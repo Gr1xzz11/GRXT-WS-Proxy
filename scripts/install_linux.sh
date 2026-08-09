@@ -9,7 +9,7 @@ DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 mkdir -p "$APP_DIR" "$BIN_DIR" "$DESKTOP_DIR"
 python3 -m venv "$VENV"
 "$VENV/bin/python" -m pip install --upgrade pip
-"$VENV/bin/pip" install "git+https://github.com/Gr1xzz11/GRXT-WS-Proxy.git@agent/initial-desktop-core"
+"$VENV/bin/pip" install "git+https://github.com/Gr1xzz11/GRXT-WS-Proxy.git@main"
 
 cat > "$BIN_DIR/grxt-ws-proxy" <<EOF
 #!/usr/bin/env bash
