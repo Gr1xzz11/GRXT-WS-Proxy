@@ -10,6 +10,10 @@
         android:label="GRXT WS Proxy"
         android:theme="@style/AppTheme">
         <activity
+            android:name=".AuthActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="true">
             <intent-filter>
