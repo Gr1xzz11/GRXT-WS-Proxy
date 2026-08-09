@@ -2,6 +2,7 @@ package com.grxt.wsproxy;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -15,9 +16,12 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -25,6 +29,8 @@ final class GrxtAuth {
     interface Callback {
         void done(boolean ok, String message);
     }
+
+    static final String AUTH_REDIRECT = "grxt://auth/confirmed";
 
     private static final String PREFS = "grxt_auth";
     private static final String K_ACCESS = "access_token";
@@ -69,11 +75,12 @@ final class GrxtAuth {
         io.execute(() -> {
             try {
                 JSONObject body = new JSONObject().put("email", email.trim()).put("password", password);
-                Response r = request("POST", "/auth/v1/signup", body.toString(), null, null);
+                String redirect = URLEncoder.encode(AUTH_REDIRECT, StandardCharsets.UTF_8.name());
+                Response r = request("POST", "/auth/v1/signup?redirect_to=" + redirect, body.toString(), null, null);
                 if (!r.ok()) { post(cb, false, errorMessage(r)); return; }
                 JSONObject json = new JSONObject(r.body);
                 if (json.optString("access_token").isEmpty()) {
-                    post(cb, true, "Аккаунт создан. Подтверди email и затем войди.");
+                    post(cb, true, "Аккаунт создан. Открой письмо и подтверди email — ссылка вернёт тебя в GRXT Auth.");
                     return;
                 }
                 saveSession(json);
@@ -101,8 +108,57 @@ final class GrxtAuth {
         });
     }
 
+    void consumeAuthRedirect(Uri uri, Callback cb) {
+        if (uri == null || !"grxt".equalsIgnoreCase(uri.getScheme()) || !"auth".equalsIgnoreCase(uri.getHost())) {
+            post(cb, false, "Некорректная ссылка GRXT Auth");
+            return;
+        }
+
+        Map<String, String> params = new HashMap<>();
+        params.putAll(parseParams(uri.getEncodedQuery()));
+        params.putAll(parseParams(uri.getEncodedFragment()));
+
+        String error = firstNonEmpty(params.get("error_description"), params.get("error"));
+        if (!error.isEmpty()) {
+            post(cb, false, error.replace('+', ' '));
+            return;
+        }
+
+        String access = value(params, "access_token");
+        String refresh = value(params, "refresh_token");
+        if (access.isEmpty()) {
+            post(cb, false, "Supabase не вернул сессию после подтверждения. Запроси новое письмо и попробуй ещё раз.");
+            return;
+        }
+
+        long expiresIn = 3600L;
+        try { expiresIn = Long.parseLong(value(params, "expires_in")); }
+        catch (Exception ignored) {}
+        final long finalExpiresIn = expiresIn;
+
+        io.execute(() -> {
+            try {
+                Response userResponse = request("GET", "/auth/v1/user", null, access, null);
+                if (!userResponse.ok()) {
+                    post(cb, false, errorMessage(userResponse));
+                    return;
+                }
+                JSONObject session = new JSONObject()
+                        .put("access_token", access)
+                        .put("refresh_token", refresh)
+                        .put("expires_in", finalExpiresIn)
+                        .put("user", new JSONObject(userResponse.body));
+                saveSession(session);
+                syncAccountInternal("email_confirmed");
+                post(cb, true, "Email подтверждён · " + grxtId());
+            } catch (Exception e) {
+                post(cb, false, shortError(e));
+            }
+        });
+    }
+
     void restore(Callback cb) {
-        if (!isSignedIn()) { post(cb, true, "Гостевой режим"); return; }
+        if (!isSignedIn()) { post(cb, false, "Требуется вход в GRXT Auth"); return; }
         long expires = prefs.getLong(K_EXPIRES, 0L);
         if (System.currentTimeMillis() / 1000L < expires - 60) {
             io.execute(() -> {
@@ -261,6 +317,28 @@ final class GrxtAuth {
         String text = readAll(stream);
         c.disconnect();
         return new Response(code, text);
+    }
+
+    private static Map<String, String> parseParams(String raw) {
+        Map<String, String> out = new HashMap<>();
+        if (raw == null || raw.isEmpty()) return out;
+        for (String pair : raw.split("&")) {
+            int i = pair.indexOf('=');
+            String key = i >= 0 ? pair.substring(0, i) : pair;
+            String val = i >= 0 ? pair.substring(i + 1) : "";
+            out.put(Uri.decode(key), Uri.decode(val));
+        }
+        return out;
+    }
+
+    private static String value(Map<String, String> map, String key) {
+        String v = map.get(key);
+        return v == null ? "" : v;
+    }
+
+    private static String firstNonEmpty(String a, String b) {
+        if (a != null && !a.isEmpty()) return a;
+        return b == null ? "" : b;
     }
 
     private static String readAll(InputStream in) throws Exception {
