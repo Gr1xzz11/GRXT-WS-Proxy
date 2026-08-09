@@ -37,6 +37,7 @@ public final class AuthActivity extends Activity {
     private EditText password;
     private Button signIn;
     private Button signUp;
+    private Button resend;
     private Button sync;
     private Button signOut;
     private Button back;
@@ -145,6 +146,11 @@ public final class AuthActivity extends Activity {
         upLp.setMargins(0, dp(10), 0, 0);
         root.addView(signUp, upLp);
 
+        resend = action("ПОВТОРИТЬ ПИСЬМО", v -> resendEmail());
+        LinearLayout.LayoutParams resendLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
+        resendLp.setMargins(0, dp(9), 0, 0);
+        root.addView(resend, resendLp);
+
         add(root, text("Аккаунт", 18, true, TEXT), 0, dp(24), 0, dp(9));
 
         sync = action("СИНХРОНИЗИРОВАТЬ", v -> {
@@ -179,7 +185,7 @@ public final class AuthActivity extends Activity {
         backLp.setMargins(0, dp(9), 0, 0);
         root.addView(back, backLp);
 
-        result = text("Войди или создай GRXT Auth. Подтверждение email вернёт тебя обратно в приложение.", 13, false, MUTED);
+        result = text("Регистрация теперь проверяется по ответу Supabase Auth. Приложение не будет считать аккаунт созданным по одному HTTP 200.", 13, false, MUTED);
         result.setLineSpacing(0, 1.15f);
         add(root, result, 0, dp(18), 0, 0);
 
@@ -194,17 +200,30 @@ public final class AuthActivity extends Activity {
         String mail = email.getText().toString().trim();
         String pass = password.getText().toString();
         setBusy(true);
-        result.setText(create ? "Создание GRXT Auth…" : "Вход в GRXT Auth…");
+        result.setText(create ? "Проверяем регистрацию в Supabase Auth…" : "Вход в GRXT Auth…");
         result.setTextColor(MUTED);
         GrxtAuth.Callback cb = (ok, message) -> {
             setBusy(false);
             result.setText(message);
             result.setTextColor(ok ? GREEN : RED);
-            if (ok) password.setText("");
+            if (ok && auth.isSignedIn()) password.setText("");
             refresh();
             if (ok && auth.isSignedIn()) openProxy();
         };
         if (create) auth.signUp(mail, pass, cb); else auth.signIn(mail, pass, cb);
+    }
+
+    private void resendEmail() {
+        String mail = email.getText().toString().trim();
+        setBusy(true);
+        result.setText("Запрашиваем повторное письмо у Supabase…");
+        result.setTextColor(MUTED);
+        auth.resendConfirmation(mail, (ok, message) -> {
+            setBusy(false);
+            result.setText(message);
+            result.setTextColor(ok ? GREEN : RED);
+            refresh();
+        });
     }
 
     private void openProxy() {
@@ -218,6 +237,7 @@ public final class AuthActivity extends Activity {
     private void setBusy(boolean busy) {
         signIn.setEnabled(!busy);
         signUp.setEnabled(!busy);
+        resend.setEnabled(!busy);
         sync.setEnabled(!busy && auth.isSignedIn());
         signOut.setEnabled(!busy && auth.isSignedIn());
         back.setEnabled(!busy && auth.isSignedIn());
@@ -235,6 +255,7 @@ public final class AuthActivity extends Activity {
         back.setVisibility(in ? View.VISIBLE : View.GONE);
         signIn.setVisibility(in ? View.GONE : View.VISIBLE);
         signUp.setVisibility(in ? View.GONE : View.VISIBLE);
+        resend.setVisibility(in ? View.GONE : View.VISIBLE);
         email.setVisibility(in ? View.GONE : View.VISIBLE);
         password.setVisibility(in ? View.GONE : View.VISIBLE);
         sync.setEnabled(in);

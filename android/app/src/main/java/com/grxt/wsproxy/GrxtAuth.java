@@ -8,6 +8,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -53,10 +54,15 @@ final class GrxtAuth {
         return !accessToken().isEmpty() && !userId().isEmpty();
     }
 
-    String email() { return prefs.getString(K_EMAIL, "") == null ? "" : prefs.getString(K_EMAIL, ""); }
-    String userId() { return prefs.getString(K_USER, "") == null ? "" : prefs.getString(K_USER, ""); }
-    String accessToken() { return prefs.getString(K_ACCESS, "") == null ? "" : prefs.getString(K_ACCESS, ""); }
-    String refreshToken() { return prefs.getString(K_REFRESH, "") == null ? "" : prefs.getString(K_REFRESH, ""); }
+    String email() { return value(K_EMAIL); }
+    String userId() { return value(K_USER); }
+    String accessToken() { return value(K_ACCESS); }
+    String refreshToken() { return value(K_REFRESH); }
+
+    private String value(String key) {
+        String v = prefs.getString(key, "");
+        return v == null ? "" : v;
+    }
 
     String grxtId() {
         String uid = userId();
@@ -72,20 +78,81 @@ final class GrxtAuth {
 
     void signUp(String email, String password, Callback cb) {
         if (!valid(email, password, cb)) return;
+        final String mail = email.trim();
         io.execute(() -> {
             try {
-                JSONObject body = new JSONObject().put("email", email.trim()).put("password", password);
+                JSONObject body = new JSONObject().put("email", mail).put("password", password);
                 String redirect = URLEncoder.encode(AUTH_REDIRECT, StandardCharsets.UTF_8.name());
                 Response r = request("POST", "/auth/v1/signup?redirect_to=" + redirect, body.toString(), null, null);
-                if (!r.ok()) { post(cb, false, errorMessage(r)); return; }
-                JSONObject json = new JSONObject(r.body);
-                if (json.optString("access_token").isEmpty()) {
-                    post(cb, true, "Аккаунт создан. Открой письмо и подтверди email — ссылка вернёт тебя в GRXT Auth.");
+                if (!r.ok()) {
+                    post(cb, false, "Регистрация не создана: " + errorMessage(r));
                     return;
                 }
-                saveSession(json);
-                syncAccountInternal("signup");
-                post(cb, true, "GRXT Auth создан · " + grxtId());
+
+                JSONObject json = new JSONObject(r.body);
+                String access = json.optString("access_token");
+                if (!access.isEmpty()) {
+                    saveSession(json);
+                    syncAccountInternal("signup");
+                    post(cb, true, "GRXT Auth создан · " + grxtId());
+                    return;
+                }
+
+                JSONObject user = json.optJSONObject("user");
+                if (user == null || user.optString("id").isEmpty()) {
+                    post(cb, false, "Supabase ответил OK, но пользователя не создал. Проверь Email provider и Auth logs в Supabase.");
+                    return;
+                }
+
+                JSONArray identities = user.optJSONArray("identities");
+                if (identities != null && identities.length() == 0) {
+                    post(cb, false, "Supabase не создал новую учётку. Скорее всего этот email уже зарегистрирован. Попробуй войти.");
+                    return;
+                }
+
+                // Verify that the returned signup really exists in Auth. For an unconfirmed account
+                // Supabase normally rejects password sign-in with email_not_confirmed.
+                Response verify = request("POST", "/auth/v1/token?grant_type=password", body.toString(), null, null);
+                if (verify.ok()) {
+                    saveSession(new JSONObject(verify.body));
+                    syncAccountInternal("signup_verified");
+                    post(cb, true, "GRXT Auth создан · " + grxtId());
+                    return;
+                }
+
+                String verifyError = errorMessage(verify);
+                String verifyCode = errorCode(verify);
+                String lower = (verifyCode + " " + verifyError).toLowerCase(Locale.ROOT);
+                if (lower.contains("email_not_confirmed") || lower.contains("email not confirmed") || lower.contains("not confirmed")) {
+                    String uid = user.optString("id");
+                    String shortUid = uid.length() > 8 ? uid.substring(0, 8) : uid;
+                    post(cb, true, "Пользователь реально создан в Supabase Auth (" + shortUid + "…). Ожидается письмо подтверждения. Если письма нет — жми «ПОВТОРИТЬ ПИСЬМО» и проверь SMTP/Auth Logs.");
+                    return;
+                }
+
+                post(cb, false, "Signup вернул пользователя, но Auth-проверка не прошла: " + verifyError);
+            } catch (Exception e) {
+                post(cb, false, shortError(e));
+            }
+        });
+    }
+
+    void resendConfirmation(String email, Callback cb) {
+        if (email == null || !email.contains("@")) {
+            post(cb, false, "Введи email для повторной отправки");
+            return;
+        }
+        final String mail = email.trim();
+        io.execute(() -> {
+            try {
+                String redirect = URLEncoder.encode(AUTH_REDIRECT, StandardCharsets.UTF_8.name());
+                JSONObject body = new JSONObject().put("type", "signup").put("email", mail);
+                Response r = request("POST", "/auth/v1/resend?redirect_to=" + redirect, body.toString(), null, null);
+                if (!r.ok()) {
+                    post(cb, false, "Supabase не принял повторное письмо: " + errorMessage(r));
+                    return;
+                }
+                post(cb, true, "Supabase принял запрос на повторное письмо. Если его нет во Входящих/Спаме — проверь SMTP и Auth Logs в проекте.");
             } catch (Exception e) {
                 post(cb, false, shortError(e));
             }
@@ -124,15 +191,15 @@ final class GrxtAuth {
             return;
         }
 
-        String access = value(params, "access_token");
-        String refresh = value(params, "refresh_token");
+        String access = mapValue(params, "access_token");
+        String refresh = mapValue(params, "refresh_token");
         if (access.isEmpty()) {
             post(cb, false, "Supabase не вернул сессию после подтверждения. Запроси новое письмо и попробуй ещё раз.");
             return;
         }
 
         long expiresIn = 3600L;
-        try { expiresIn = Long.parseLong(value(params, "expires_in")); }
+        try { expiresIn = Long.parseLong(mapValue(params, "expires_in")); }
         catch (Exception ignored) {}
         final long finalExpiresIn = expiresIn;
 
@@ -162,8 +229,8 @@ final class GrxtAuth {
         long expires = prefs.getLong(K_EXPIRES, 0L);
         if (System.currentTimeMillis() / 1000L < expires - 60) {
             io.execute(() -> {
-                syncAccountInternal("restore");
-                post(cb, true, "Сессия GRXT Auth восстановлена");
+                boolean synced = syncAccountInternal("restore");
+                post(cb, true, synced ? "Сессия GRXT Auth восстановлена" : "Сессия восстановлена, но grxt_users ещё не настроена");
             });
             return;
         }
@@ -208,7 +275,7 @@ final class GrxtAuth {
         if (!isSignedIn()) { post(cb, false, "Сначала войди в GRXT Auth"); return; }
         io.execute(() -> {
             boolean ok = syncAccountInternal("manual_sync");
-            post(cb, ok, ok ? "Данные синхронизированы" : "Auth работает, но таблицы Supabase ещё не настроены");
+            post(cb, ok, ok ? "grxt_users синхронизирована" : "Auth работает, но unified migration 0002 ещё не применена");
         });
     }
 
@@ -221,33 +288,18 @@ final class GrxtAuth {
             String token = accessToken();
             if (token.isEmpty()) return false;
 
-            JSONObject profile = new JSONObject()
-                    .put("id", userId())
-                    .put("grxt_id", grxtId());
-            Response pr = request("POST", "/rest/v1/profiles?on_conflict=id", profile.toString(), token,
-                    "resolution=merge-duplicates,return=minimal");
-            if (!pr.ok()) return false;
-
             String name = (Build.MANUFACTURER + " " + Build.MODEL).trim();
-            JSONObject device = new JSONObject()
-                    .put("user_id", userId())
-                    .put("device_key", deviceId())
-                    .put("device_name", name)
-                    .put("manufacturer", Build.MANUFACTURER)
-                    .put("model", Build.MODEL)
-                    .put("android_version", Build.VERSION.RELEASE)
-                    .put("app_version", appVersion())
-                    .put("is_active", true);
-            Response dr = request("POST", "/rest/v1/devices?on_conflict=user_id,device_key", device.toString(), token,
-                    "resolution=merge-duplicates,return=minimal");
-            if (!dr.ok()) return false;
+            JSONObject body = new JSONObject()
+                    .put("p_device_key", deviceId())
+                    .put("p_device_name", name)
+                    .put("p_manufacturer", Build.MANUFACTURER)
+                    .put("p_model", Build.MODEL)
+                    .put("p_android_version", Build.VERSION.RELEASE)
+                    .put("p_app_version", appVersion())
+                    .put("p_event", event);
 
-            JSONObject ev = new JSONObject()
-                    .put("user_id", userId())
-                    .put("device_key", deviceId())
-                    .put("event", event);
-            request("POST", "/rest/v1/security_events", ev.toString(), token, "return=minimal");
-            return true;
+            Response r = request("POST", "/rest/v1/rpc/grxt_sync_user", body.toString(), token, null);
+            return r.ok();
         } catch (Exception ignored) {
             return false;
         }
@@ -271,6 +323,7 @@ final class GrxtAuth {
         if (user == null || access.isEmpty()) throw new IllegalStateException("Supabase не вернул сессию");
         String uid = user.optString("id");
         String mail = user.optString("email");
+        if (uid.isEmpty()) throw new IllegalStateException("Supabase не вернул user.id");
         prefs.edit()
                 .putString(K_ACCESS, access)
                 .putString(K_REFRESH, refresh)
@@ -331,7 +384,7 @@ final class GrxtAuth {
         return out;
     }
 
-    private static String value(Map<String, String> map, String key) {
+    private static String mapValue(Map<String, String> map, String key) {
         String v = map.get(key);
         return v == null ? "" : v;
     }
@@ -351,12 +404,24 @@ final class GrxtAuth {
         return b.toString();
     }
 
+    private static String errorCode(Response r) {
+        try {
+            JSONObject j = new JSONObject(r.body);
+            String code = j.optString("error_code");
+            if (code.isEmpty()) code = j.optString("code");
+            return code;
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
     private static String errorMessage(Response r) {
         try {
             JSONObject j = new JSONObject(r.body);
             String m = j.optString("msg");
             if (m.isEmpty()) m = j.optString("message");
             if (m.isEmpty()) m = j.optString("error_description");
+            if (m.isEmpty()) m = j.optString("error");
             if (!m.isEmpty()) return m;
         } catch (Exception ignored) {}
         return "Supabase HTTP " + r.code;
@@ -381,7 +446,7 @@ final class GrxtAuth {
     private static String shortError(Exception e) {
         String m = e.getMessage();
         if (m == null || m.trim().isEmpty()) m = e.getClass().getSimpleName();
-        return m.length() > 120 ? m.substring(0, 120) + "…" : m;
+        return m.length() > 180 ? m.substring(0, 180) + "…" : m;
     }
 
     private void post(Callback cb, boolean ok, String message) {
