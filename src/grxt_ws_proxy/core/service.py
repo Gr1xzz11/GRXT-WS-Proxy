@@ -1,44 +1,75 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+import signal
 from pathlib import Path
 
 from .state import CoreStatus, ProxyState
+from .upstream import UpstreamSettings, run_upstream
 
 LOG = logging.getLogger("grxt_ws_proxy.core")
 
 
 class ProxyCore:
-    """Lifecycle shell for the networking core.
-
-    The upstream MTProto/WebSocket implementation will be adapted behind this
-    interface. Keeping lifecycle/state separate prevents the desktop UI from
-    owning network sockets and makes headless operation possible.
-    """
-
-    def __init__(self) -> None:
-        self.state = ProxyState()
+    def __init__(self, settings: UpstreamSettings | None = None) -> None:
+        self.settings = settings or UpstreamSettings()
+        self.state = ProxyState(
+            listen_host=self.settings.host,
+            listen_port=self.settings.port,
+        )
         self._stop_event = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
-        if self.state.status is not CoreStatus.STOPPED:
+        if self._task is not None and not self._task.done():
             return
-        self.state.status = CoreStatus.STARTING
-        LOG.info("Starting proxy core on %s:%d", self.state.listen_host, self.state.listen_port)
 
-        # TODO: attach adapted Flowseal MTProto -> WebSocket transport here.
+        self._stop_event = asyncio.Event()
+        self.state.status = CoreStatus.STARTING
+        self.state.last_error = None
+        LOG.info("Starting real MTProto/WS core on %s:%d", self.settings.host, self.settings.port)
+
+        self._task = asyncio.create_task(
+            run_upstream(self.settings, self._stop_event),
+            name="grxt-upstream-proxy",
+        )
+        await asyncio.sleep(0)
+
+        if self._task.done():
+            try:
+                self._task.result()
+            except Exception as exc:
+                self.state.status = CoreStatus.ERROR
+                self.state.last_error = str(exc)
+                raise
+
         self.state.status = CoreStatus.RUNNING
+        LOG.info("Proxy core started; Telegram link: %s", self.settings.telegram_link)
 
     async def stop(self) -> None:
+        if self._task is None:
+            self.state.status = CoreStatus.STOPPED
+            return
+
         LOG.info("Stopping proxy core")
         self._stop_event.set()
-        self.state.status = CoreStatus.STOPPED
+        try:
+            await asyncio.wait_for(self._task, timeout=5)
+        except asyncio.TimeoutError:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+        finally:
+            self._task = None
+            self.state.status = CoreStatus.STOPPED
 
     async def run_forever(self) -> None:
         await self.start()
-        await self._stop_event.wait()
+        assert self._task is not None
+        try:
+            await self._task
+        finally:
+            self.state.status = CoreStatus.STOPPED
 
 
 def configure_logging() -> None:
@@ -57,7 +88,22 @@ def configure_logging() -> None:
 async def _main() -> None:
     configure_logging()
     core = ProxyCore()
-    await core.run_forever()
+    loop = asyncio.get_running_loop()
+    shutdown = asyncio.Event()
+
+    def request_shutdown() -> None:
+        shutdown.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, request_shutdown)
+        except (NotImplementedError, RuntimeError):
+            pass
+
+    await core.start()
+    LOG.info("GRXT WS Proxy core is ready on 127.0.0.1:1443")
+    await shutdown.wait()
+    await core.stop()
 
 
 def main() -> None:
