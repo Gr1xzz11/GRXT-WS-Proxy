@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
@@ -50,6 +51,8 @@ public final class AuthActivity extends Activity {
         setContentView(buildUi());
         refresh();
 
+        if (handleAuthIntent(getIntent())) return;
+
         if (auth.isSignedIn()) {
             setBusy(true);
             result.setText("Проверка сессии GRXT Auth…");
@@ -70,6 +73,31 @@ public final class AuthActivity extends Activity {
                 if (required) openProxy();
             });
         }
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleAuthIntent(intent);
+    }
+
+    private boolean handleAuthIntent(Intent intent) {
+        Uri data = intent == null ? null : intent.getData();
+        if (data == null || !"grxt".equalsIgnoreCase(data.getScheme()) || !"auth".equalsIgnoreCase(data.getHost())) {
+            return false;
+        }
+
+        setBusy(true);
+        result.setText("Подтверждаем email через Supabase…");
+        result.setTextColor(MUTED);
+        auth.consumeAuthRedirect(data, (ok, message) -> {
+            setBusy(false);
+            result.setText(message);
+            result.setTextColor(ok ? GREEN : RED);
+            refresh();
+            if (ok && auth.isSignedIn()) openProxy();
+        });
+        return true;
     }
 
     private View buildUi() {
@@ -151,7 +179,7 @@ public final class AuthActivity extends Activity {
         backLp.setMargins(0, dp(9), 0, 0);
         root.addView(back, backLp);
 
-        result = text("Войди или создай GRXT Auth. Без аккаунта прокси недоступен.", 13, false, MUTED);
+        result = text("Войди или создай GRXT Auth. Подтверждение email вернёт тебя обратно в приложение.", 13, false, MUTED);
         result.setLineSpacing(0, 1.15f);
         add(root, result, 0, dp(18), 0, 0);
 
