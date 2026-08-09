@@ -63,14 +63,6 @@ class ProxyCore:
             self._task = None
             self.state.status = CoreStatus.STOPPED
 
-    async def run_forever(self) -> None:
-        await self.start()
-        assert self._task is not None
-        try:
-            await self._task
-        finally:
-            self.state.status = CoreStatus.STOPPED
-
 
 def configure_logging() -> None:
     log_dir = Path.home() / ".local" / "state" / "grxt-ws-proxy"
@@ -86,8 +78,10 @@ def configure_logging() -> None:
 
 
 async def _main() -> None:
+    from grxt_ws_proxy.settings import load_settings
+
     configure_logging()
-    core = ProxyCore()
+    core = ProxyCore(load_settings())
     loop = asyncio.get_running_loop()
     shutdown = asyncio.Event()
 
@@ -101,7 +95,7 @@ async def _main() -> None:
             pass
 
     await core.start()
-    LOG.info("GRXT WS Proxy core is ready on 127.0.0.1:1443")
+    LOG.info("GRXT WS Proxy core is ready on %s:%d", core.settings.host, core.settings.port)
     await shutdown.wait()
     await core.stop()
 
