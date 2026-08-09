@@ -1,6 +1,7 @@
 package com.grxt.wsproxy;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -14,7 +15,6 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
-import android.widget.Toast;
 
 public final class AuthActivity extends Activity {
     private static final int BG = Color.rgb(7, 13, 24);
@@ -38,19 +38,38 @@ public final class AuthActivity extends Activity {
     private Button signUp;
     private Button sync;
     private Button signOut;
+    private Button back;
+    private boolean required;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         auth = new GrxtAuth(this);
+        required = getIntent().getBooleanExtra("required", false);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         setContentView(buildUi());
         refresh();
-        auth.restore((ok, message) -> {
-            result.setText(message);
-            result.setTextColor(ok ? GREEN : RED);
-            refresh();
-        });
+
+        if (auth.isSignedIn()) {
+            setBusy(true);
+            result.setText("Проверка сессии GRXT Auth…");
+            auth.restore((ok, message) -> {
+                setBusy(false);
+                if (!ok || !auth.isSignedIn()) {
+                    ProxyService.stop(this);
+                    auth.signOut((ignored, ignoredMessage) -> {
+                        result.setText("Сессия недействительна. Войди снова.");
+                        result.setTextColor(RED);
+                        refresh();
+                    });
+                    return;
+                }
+                result.setText(message);
+                result.setTextColor(GREEN);
+                refresh();
+                if (required) openProxy();
+            });
+        }
     }
 
     private View buildUi() {
@@ -59,13 +78,12 @@ public final class AuthActivity extends Activity {
         root.setPadding(dp(18), dp(22), dp(18), dp(30));
         root.setBackgroundColor(BG);
 
-        TextView title = text("GRXT Auth", 30, true, TEXT);
-        root.addView(title);
-        add(root, text("Единый аккаунт GRXT WS Proxy", 14, false, MUTED), 0, dp(5), 0, dp(20));
+        root.addView(text("GRXT Auth", 30, true, TEXT));
+        add(root, text("Авторизация обязательна для GRXT WS Proxy", 14, false, MUTED), 0, dp(5), 0, dp(20));
 
         LinearLayout account = card();
         account.setPadding(dp(18), dp(17), dp(18), dp(17));
-        authState = text("Гостевой режим", 21, true, TEXT);
+        authState = text("ТРЕБУЕТСЯ ВХОД", 21, true, RED);
         account.addView(authState);
         grxtId = text("GRXT ID: —", 16, true, TEXT);
         add(account, grxtId, 0, dp(12), 0, 0);
@@ -75,8 +93,7 @@ public final class AuthActivity extends Activity {
         add(account, deviceState, 0, dp(5), 0, 0);
         root.addView(account, matchWrap());
 
-        TextView formTitle = text("Вход или регистрация", 18, true, TEXT);
-        add(root, formTitle, 0, dp(24), 0, dp(10));
+        add(root, text("Вход или регистрация", 18, true, TEXT), 0, dp(24), 0, dp(10));
 
         email = field("Email");
         email.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
@@ -100,8 +117,7 @@ public final class AuthActivity extends Activity {
         upLp.setMargins(0, dp(10), 0, 0);
         root.addView(signUp, upLp);
 
-        TextView manage = text("Аккаунт", 18, true, TEXT);
-        add(root, manage, 0, dp(24), 0, dp(9));
+        add(root, text("Аккаунт", 18, true, TEXT), 0, dp(24), 0, dp(9));
 
         sync = action("СИНХРОНИЗИРОВАТЬ", v -> {
             setBusy(true);
@@ -116,9 +132,10 @@ public final class AuthActivity extends Activity {
 
         signOut = action("ВЫЙТИ ИЗ GRXT AUTH", v -> {
             setBusy(true);
+            ProxyService.stop(this);
             auth.signOut((ok, message) -> {
                 setBusy(false);
-                result.setText(message);
+                result.setText("Вы вышли. Для использования прокси требуется вход.");
                 result.setTextColor(TEXT);
                 refresh();
             });
@@ -127,12 +144,14 @@ public final class AuthActivity extends Activity {
         outLp.setMargins(0, dp(9), 0, 0);
         root.addView(signOut, outLp);
 
-        Button back = action("НАЗАД К ПРОКСИ", v -> finish());
+        back = action("НАЗАД К ПРОКСИ", v -> {
+            if (auth.isSignedIn()) openProxy();
+        });
         LinearLayout.LayoutParams backLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
         backLp.setMargins(0, dp(9), 0, 0);
         root.addView(back, backLp);
 
-        result = text("Аккаунт не обязателен: прокси продолжает работать в гостевом режиме.", 13, false, MUTED);
+        result = text("Войди или создай GRXT Auth. Без аккаунта прокси недоступен.", 13, false, MUTED);
         result.setLineSpacing(0, 1.15f);
         add(root, result, 0, dp(18), 0, 0);
 
@@ -155,8 +174,17 @@ public final class AuthActivity extends Activity {
             result.setTextColor(ok ? GREEN : RED);
             if (ok) password.setText("");
             refresh();
+            if (ok && auth.isSignedIn()) openProxy();
         };
         if (create) auth.signUp(mail, pass, cb); else auth.signIn(mail, pass, cb);
+    }
+
+    private void openProxy() {
+        if (!auth.isSignedIn()) return;
+        Intent i = new Intent(this, MainActivity.class);
+        i.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(i);
+        finish();
     }
 
     private void setBusy(boolean busy) {
@@ -164,19 +192,26 @@ public final class AuthActivity extends Activity {
         signUp.setEnabled(!busy);
         sync.setEnabled(!busy && auth.isSignedIn());
         signOut.setEnabled(!busy && auth.isSignedIn());
+        back.setEnabled(!busy && auth.isSignedIn());
     }
 
     private void refresh() {
         boolean in = auth.isSignedIn();
-        authState.setText(in ? "GRXT Auth подключён" : "Гостевой режим");
-        authState.setTextColor(in ? GREEN : TEXT);
+        authState.setText(in ? "GRXT AUTH ПОДКЛЮЧЁН" : "ТРЕБУЕТСЯ ВХОД");
+        authState.setTextColor(in ? GREEN : RED);
         grxtId.setText("GRXT ID: " + (in ? auth.grxtId() : "—"));
         emailState.setText("Email: " + (in ? auth.email() : "—"));
         deviceState.setText("Устройство: " + auth.deviceId());
+        sync.setVisibility(in ? View.VISIBLE : View.GONE);
+        signOut.setVisibility(in ? View.VISIBLE : View.GONE);
+        back.setVisibility(in ? View.VISIBLE : View.GONE);
+        signIn.setVisibility(in ? View.GONE : View.VISIBLE);
+        signUp.setVisibility(in ? View.GONE : View.VISIBLE);
+        email.setVisibility(in ? View.GONE : View.VISIBLE);
+        password.setVisibility(in ? View.GONE : View.VISIBLE);
         sync.setEnabled(in);
         signOut.setEnabled(in);
-        signIn.setEnabled(true);
-        signUp.setEnabled(true);
+        back.setEnabled(in);
     }
 
     private EditText field(String hint) {
@@ -247,5 +282,4 @@ public final class AuthActivity extends Activity {
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
-    private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
 }

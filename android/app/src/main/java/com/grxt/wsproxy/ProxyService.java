@@ -46,6 +46,17 @@ public final class ProxyService extends Service {
             return START_NOT_STICKY;
         }
 
+        GrxtAuth auth = new GrxtAuth(this);
+        if (!auth.isSignedIn()) {
+            running = false;
+            route = "auth_required";
+            error = "Требуется GRXT Auth";
+            startForeground(NOTIFICATION_ID, notification("Требуется вход в GRXT Auth"));
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
         startForeground(NOTIFICATION_ID, notification("Запуск MTProto-прокси…"));
         if (engine == null || !engine.isRunning()) {
             try {
