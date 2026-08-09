@@ -16,6 +16,7 @@ final class RawWebSocket implements Closeable {
     private final Socket socket;
     private final InputStream in;
     private final OutputStream out;
+    private final Object writeLock = new Object();
     private volatile boolean closed;
 
     private RawWebSocket(Socket socket) throws IOException {
@@ -30,9 +31,11 @@ final class RawWebSocket implements Closeable {
         raw.connect(new java.net.InetSocketAddress(targetHost, 443), timeoutMs);
         raw.setSoTimeout(timeoutMs);
 
-        SSLSocket ssl = (SSLSocket) SSLSocketFactory.getDefault().createSocket(raw, domain, 443, true);
+        SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        SSLSocket ssl = (SSLSocket) factory.createSocket(raw, domain, 443, true);
         SSLParameters params = ssl.getSSLParameters();
         params.setServerNames(java.util.Collections.singletonList(new SNIHostName(domain)));
+        params.setEndpointIdentificationAlgorithm("HTTPS");
         ssl.setSSLParameters(params);
         ssl.startHandshake();
 
@@ -47,8 +50,10 @@ final class RawWebSocket implements Closeable {
                 "Sec-WebSocket-Key: " + key + "\r\n" +
                 "Sec-WebSocket-Version: 13\r\n" +
                 "Sec-WebSocket-Protocol: binary\r\n\r\n";
-        ws.out.write(request.getBytes(StandardCharsets.US_ASCII));
-        ws.out.flush();
+        synchronized (ws.writeLock) {
+            ws.out.write(request.getBytes(StandardCharsets.US_ASCII));
+            ws.out.flush();
+        }
 
         String status = readAsciiLine(ws.in);
         if (status == null || !status.contains(" 101 ")) {
@@ -61,12 +66,14 @@ final class RawWebSocket implements Closeable {
         return ws;
     }
 
-    synchronized void sendBinary(byte[] data) throws IOException {
-        if (closed) throw new EOFException("WebSocket closed");
-        writeFrame(0x2, data);
+    void sendBinary(byte[] data) throws IOException {
+        synchronized (writeLock) {
+            if (closed) throw new EOFException("WebSocket closed");
+            writeFrameLocked(0x2, data);
+        }
     }
 
-    synchronized byte[] receiveBinary() throws IOException {
+    byte[] receiveBinary() throws IOException {
         while (!closed) {
             int a = in.read();
             int b = in.read();
@@ -82,36 +89,56 @@ final class RawWebSocket implements Closeable {
             byte[] mask = null;
             if ((b & 0x80) != 0) mask = readExact(4);
             byte[] payload = readExact((int) len);
-            if (mask != null) for (int i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
+            if (mask != null) {
+                for (int i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
+            }
             if (opcode == 0x8) { closed = true; return null; }
-            if (opcode == 0x9) { writeFrame(0xA, payload); continue; }
+            if (opcode == 0x9) {
+                synchronized (writeLock) {
+                    if (!closed) writeFrameLocked(0xA, payload);
+                }
+                continue;
+            }
             if (opcode == 0xA) continue;
             if (opcode == 0x1 || opcode == 0x2 || opcode == 0x0) return payload;
         }
         return null;
     }
 
-    private void writeFrame(int opcode, byte[] data) throws IOException {
+    private void writeFrameLocked(int opcode, byte[] data) throws IOException {
         out.write(0x80 | opcode);
         int len = data.length;
         if (len < 126) out.write(0x80 | len);
         else if (len < 65536) {
             out.write(0x80 | 126);
-            out.write((len >>> 8) & 0xff); out.write(len & 0xff);
+            out.write((len >>> 8) & 0xff);
+            out.write(len & 0xff);
         } else {
             out.write(0x80 | 127);
             long v = len;
             for (int i = 7; i >= 0; i--) out.write((int) (v >>> (i * 8)) & 0xff);
         }
-        byte[] mask = new byte[4]; RNG.nextBytes(mask); out.write(mask);
+        byte[] mask = new byte[4];
+        RNG.nextBytes(mask);
+        out.write(mask);
         for (int i = 0; i < data.length; i++) out.write(data[i] ^ mask[i & 3]);
         out.flush();
     }
 
-    private int readU8() throws IOException { int v = in.read(); if (v < 0) throw new EOFException(); return v; }
+    private int readU8() throws IOException {
+        int v = in.read();
+        if (v < 0) throw new EOFException();
+        return v;
+    }
+
     private byte[] readExact(int n) throws IOException {
-        byte[] b = new byte[n]; int off = 0;
-        while (off < n) { int r = in.read(b, off, n - off); if (r < 0) throw new EOFException(); off += r; }
+        byte[] b = new byte[n];
+        int off = 0;
+        while (off < n) {
+            int r = in.read(b, off, n - off);
+            if (r < 0) throw new EOFException();
+            off += r;
+        }
         return b;
     }
 
@@ -125,13 +152,14 @@ final class RawWebSocket implements Closeable {
                 if (n > 0 && data[n - 1] == '\r') n--;
                 return new String(data, 0, n, StandardCharsets.US_ASCII);
             }
-            buf.write(c); prev = c;
+            buf.write(c);
+            prev = c;
             if (buf.size() > 16384) throw new IOException("HTTP header too large");
         }
         return buf.size() == 0 ? null : buf.toString(StandardCharsets.US_ASCII.name());
     }
 
-    @Override public synchronized void close() {
+    @Override public void close() {
         if (closed) return;
         closed = true;
         try { socket.close(); } catch (IOException ignored) {}
