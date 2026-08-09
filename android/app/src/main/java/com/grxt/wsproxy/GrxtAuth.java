@@ -156,6 +156,10 @@ final class GrxtAuth {
         });
     }
 
+    void close() {
+        io.shutdownNow();
+    }
+
     private boolean syncAccountInternal(String event) {
         try {
             String token = accessToken();
@@ -176,7 +180,7 @@ final class GrxtAuth {
                     .put("manufacturer", Build.MANUFACTURER)
                     .put("model", Build.MODEL)
                     .put("android_version", Build.VERSION.RELEASE)
-                    .put("app_version", BuildConfig.VERSION_NAME)
+                    .put("app_version", appVersion())
                     .put("is_active", true);
             Response dr = request("POST", "/rest/v1/devices?on_conflict=user_id,device_key", device.toString(), token,
                     "resolution=merge-duplicates,return=minimal");
@@ -190,6 +194,16 @@ final class GrxtAuth {
             return true;
         } catch (Exception ignored) {
             return false;
+        }
+    }
+
+    private String appVersion() {
+        try {
+            String version = context.getPackageManager()
+                    .getPackageInfo(context.getPackageName(), 0).versionName;
+            return version == null || version.isEmpty() ? "unknown" : version;
+        } catch (Exception e) {
+            return "unknown";
         }
     }
 
