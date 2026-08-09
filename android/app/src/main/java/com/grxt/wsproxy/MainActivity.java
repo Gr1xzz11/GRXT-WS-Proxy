@@ -19,7 +19,11 @@ import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.*;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+import android.widget.Toast;
 
 public final class MainActivity extends Activity {
     private static final int BG = Color.rgb(7, 13, 24);
@@ -41,23 +45,60 @@ public final class MainActivity extends Activity {
     private Button toggle;
     private Button telegram;
     private GrxtAuth auth;
+    private boolean authVerified;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         auth = new GrxtAuth(this);
+
+        if (!auth.isSignedIn()) {
+            openRequiredAuth();
+            return;
+        }
+
         if (Build.VERSION.SDK_INT >= 33 &&
                 checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 10);
         }
+
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         setContentView(buildUi());
+        toggle.setEnabled(false);
+        telegram.setEnabled(false);
+        authState.setText("Проверка GRXT Auth…");
         handler.post(refreshTask);
+
+        auth.restore((ok, message) -> {
+            if (!ok || !auth.isSignedIn()) {
+                ProxyService.stop(this);
+                openRequiredAuth();
+                return;
+            }
+            authVerified = true;
+            toggle.setEnabled(true);
+            telegram.setEnabled(true);
+            refresh();
+        });
     }
 
     @Override protected void onResume() {
         super.onResume();
-        if (status != null) refresh();
+        if (auth != null && status != null) {
+            if (!auth.isSignedIn()) {
+                ProxyService.stop(this);
+                openRequiredAuth();
+                return;
+            }
+            refresh();
+        }
+    }
+
+    private void openRequiredAuth() {
+        Intent i = new Intent(this, AuthActivity.class);
+        i.putExtra("required", true);
+        startActivity(i);
+        finish();
     }
 
     private View buildUi() {
@@ -82,11 +123,10 @@ public final class MainActivity extends Activity {
 
         LinearLayout account = card();
         account.setPadding(dp(18), dp(15), dp(18), dp(15));
-        TextView accountTitle = text("GRXT Auth", 17, true, TEXT);
-        account.addView(accountTitle);
-        authState = text("Гостевой режим · GRXT ID: —", 13, false, MUTED);
+        account.addView(text("GRXT Auth", 17, true, TEXT));
+        authState = text("Проверка GRXT Auth…", 13, false, MUTED);
         add(account, authState, 0, dp(8), 0, 0);
-        Button accountButton = action("ОТКРЫТЬ GRXT AUTH", v -> openAuth());
+        Button accountButton = action("УПРАВЛЕНИЕ АККАУНТОМ", v -> startActivity(new Intent(this, AuthActivity.class)));
         LinearLayout.LayoutParams accountLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
         accountLp.setMargins(0, dp(12), 0, 0);
         account.addView(accountButton, accountLp);
@@ -94,6 +134,7 @@ public final class MainActivity extends Activity {
 
         toggle = mainButton("ВКЛЮЧИТЬ ПРОКСИ", BLUE);
         toggle.setOnClickListener(v -> {
+            if (!requireVerifiedAuth()) return;
             toggle.setEnabled(false);
             if (ProxyService.running) ProxyService.stop(this); else ProxyService.start(this);
             handler.postDelayed(() -> { refresh(); toggle.setEnabled(true); }, 550);
@@ -109,14 +150,12 @@ public final class MainActivity extends Activity {
         tg.setMargins(0, dp(11), 0, 0);
         root.addView(telegram, tg);
 
-        TextView quick = text("Быстрые действия", 18, true, TEXT);
-        add(root, quick, 0, dp(25), 0, dp(9));
-
+        add(root, text("Быстрые действия", 18, true, TEXT), 0, dp(25), 0, dp(9));
         LinearLayout grid = new LinearLayout(this);
         grid.setOrientation(LinearLayout.VERTICAL);
         addActionRow(grid,
-                action("РЕСТАРТ", v -> { ProxyService.restart(this); toast("MTProto перезапускается"); }),
-                action("ПРОВЕРИТЬ МАРШРУТ", v -> { ProxyService.restart(this); toast("Маршруты проверяются заново"); }));
+                action("РЕСТАРТ", v -> { if (requireVerifiedAuth()) ProxyService.restart(this); }),
+                action("ПРОВЕРИТЬ МАРШРУТ", v -> { if (requireVerifiedAuth()) ProxyService.restart(this); }));
         addActionRow(grid,
                 action("СКОПИРОВАТЬ АДРЕС", v -> copyAddress()),
                 action("СКОПИРОВАТЬ SECRET", v -> copySecret()));
@@ -124,7 +163,7 @@ public final class MainActivity extends Activity {
                 action("НОВЫЙ SECRET", v -> regenerateSecret()),
                 action("СТАТУС", v -> showStatus()));
         addActionRow(grid,
-                action("GRXT AUTH", v -> openAuth()),
+                action("GRXT AUTH", v -> startActivity(new Intent(this, AuthActivity.class))),
                 action("ОСТАНОВИТЬ", v -> ProxyService.stop(this)));
         root.addView(grid);
 
@@ -134,13 +173,12 @@ public final class MainActivity extends Activity {
         add(check, text("MTProto listener: 127.0.0.1:1443", 13, false, MUTED), 0, dp(10), 0, 0);
         add(check, text("WebSocket: прямой Telegram маршрут", 13, false, MUTED), 0, dp(5), 0, 0);
         add(check, text("Cloudflare: резервный WebSocket маршрут", 13, false, MUTED), 0, dp(5), 0, 0);
-        add(check, text("GRXT Cloud: Auth + устройство + статистика", 13, false, MUTED), 0, dp(5), 0, 0);
+        add(check, text("GRXT Auth: обязателен для запуска прокси", 13, false, MUTED), 0, dp(5), 0, 0);
         add(root, check, 0, dp(18), 0, 0);
 
         error = text("", 13, true, RED);
         add(root, error, 0, dp(14), 0, 0);
-
-        TextView note = text("Аккаунт не обязателен. В гостевом режиме прокси работает локально. После входа GRXT Auth создаёт постоянный GRXT ID и привязывает устройство к Supabase.", 12, false, MUTED);
+        TextView note = text("GRXT WS Proxy работает только после входа в GRXT Auth. Без действующей авторизации MTProto-сервис не запускается.", 12, false, MUTED);
         note.setLineSpacing(0, 1.15f);
         add(root, note, 0, dp(15), 0, 0);
 
@@ -151,8 +189,110 @@ public final class MainActivity extends Activity {
         return scroll;
     }
 
-    private void openAuth() {
-        startActivity(new Intent(this, AuthActivity.class));
+    private boolean requireVerifiedAuth() {
+        if (authVerified && auth.isSignedIn()) return true;
+        ProxyService.stop(this);
+        openRequiredAuth();
+        return false;
+    }
+
+    private void connectTelegram() {
+        if (!requireVerifiedAuth()) return;
+        if (!ProxyService.running) {
+            ProxyService.start(this);
+            telegram.setEnabled(false);
+            telegram.setText("ЗАПУСК MTProto…");
+            waitAndOpenTelegram(0);
+        } else {
+            openTelegram();
+        }
+    }
+
+    private void waitAndOpenTelegram(int n) {
+        if (ProxyService.running) {
+            handler.postDelayed(() -> {
+                telegram.setEnabled(true);
+                telegram.setText("ПОДКЛЮЧИТЬ TELEGRAM");
+                openTelegram();
+            }, 250);
+            return;
+        }
+        if (n >= 50) {
+            telegram.setEnabled(true);
+            telegram.setText("ПОДКЛЮЧИТЬ TELEGRAM");
+            toast("MTProto не запустился. Проверь статус.");
+            return;
+        }
+        handler.postDelayed(() -> waitAndOpenTelegram(n + 1), 120);
+    }
+
+    private void openTelegram() {
+        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(Settings.telegramLink(this)));
+        try { startActivity(i); }
+        catch (ActivityNotFoundException e) { toast("Telegram не найден"); }
+    }
+
+    private void copyAddress() {
+        copy("GRXT MTProto address", Settings.HOST + ":" + Settings.PORT);
+        toast("Адрес скопирован");
+    }
+
+    private void copySecret() {
+        copy("GRXT MTProto secret", Settings.secret(this));
+        toast("MTProto secret скопирован");
+    }
+
+    private void regenerateSecret() {
+        if (!requireVerifiedAuth()) return;
+        boolean wasRunning = ProxyService.running;
+        if (wasRunning) ProxyService.stop(this);
+        Settings.regenerateSecret(this);
+        handler.postDelayed(() -> {
+            if (wasRunning) ProxyService.start(this);
+            toast("Новый secret создан. Переподключи прокси в Telegram.");
+        }, 600);
+    }
+
+    private void showStatus() {
+        if (!auth.isSignedIn()) {
+            openRequiredAuth();
+            return;
+        }
+        String value = "Сервис: " + (ProxyService.running ? "работает" : "выключен") +
+                "\nАдрес: " + Settings.HOST + ":" + Settings.PORT +
+                "\nРежим: MTProto" +
+                "\nМаршрут: " + ProxyService.route +
+                "\nGRXT ID: " + auth.grxtId() +
+                "\nEmail: " + auth.email() +
+                (ProxyService.error.isEmpty() ? "" : "\nОшибка: " + ProxyService.error);
+        new AlertDialog.Builder(this).setTitle("GRXT WS Proxy").setMessage(value).setPositiveButton("OK", null).show();
+    }
+
+    private final Runnable refreshTask = new Runnable() {
+        @Override public void run() {
+            refresh();
+            handler.postDelayed(this, 650);
+        }
+    };
+
+    private void refresh() {
+        if (status == null) return;
+        boolean on = ProxyService.running;
+        status.setText(on ? "MTProto прокси активен" : "Прокси выключен");
+        status.setTextColor(on ? GREEN : TEXT);
+        String r = ProxyService.route == null ? "" : ProxyService.route.trim();
+        route.setText("Маршрут: " + (r.isEmpty() || "off".equalsIgnoreCase(r) ? (on ? "Auto" : "выключен") : r));
+        details.setText("Локальный адрес: " + Settings.HOST + ":" + Settings.PORT);
+        if (auth.isSignedIn()) {
+            authState.setText("Подключён · " + auth.grxtId() + " · " + auth.email());
+            authState.setTextColor(GREEN);
+        } else {
+            authState.setText("ТРЕБУЕТСЯ ВХОД");
+            authState.setTextColor(RED);
+        }
+        toggle.setText(on ? "ВЫКЛЮЧИТЬ ПРОКСИ" : "ВКЛЮЧИТЬ ПРОКСИ");
+        toggle.setBackground(rounded(on ? BLUE_2 : BLUE, 18));
+        error.setText(ProxyService.error.isEmpty() ? "" : "Ошибка: " + ProxyService.error);
     }
 
     private Button action(String label, View.OnClickListener listener) {
@@ -193,108 +333,6 @@ public final class MainActivity extends Activity {
         return b;
     }
 
-    private void connectTelegram() {
-        if (!ProxyService.running) {
-            ProxyService.start(this);
-            telegram.setEnabled(false);
-            telegram.setText("ЗАПУСК MTProto…");
-            waitAndOpenTelegram(0);
-        } else {
-            openTelegram();
-        }
-    }
-
-    private void waitAndOpenTelegram(int n) {
-        if (ProxyService.running) {
-            handler.postDelayed(() -> {
-                telegram.setEnabled(true);
-                telegram.setText("ПОДКЛЮЧИТЬ TELEGRAM");
-                openTelegram();
-            }, 250);
-            return;
-        }
-        if (n >= 50) {
-            telegram.setEnabled(true);
-            telegram.setText("ПОДКЛЮЧИТЬ TELEGRAM");
-            toast("MTProto не запустился. Проверь ошибку на главном экране.");
-            return;
-        }
-        handler.postDelayed(() -> waitAndOpenTelegram(n + 1), 120);
-    }
-
-    private void openTelegram() {
-        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(Settings.telegramLink(this)));
-        try { startActivity(i); }
-        catch (ActivityNotFoundException e) { toast("Telegram не найден"); }
-    }
-
-    private void copyAddress() {
-        copy("GRXT MTProto address", Settings.HOST + ":" + Settings.PORT);
-        toast("Скопировано: " + Settings.HOST + ":" + Settings.PORT);
-    }
-
-    private void copySecret() {
-        copy("GRXT MTProto secret", Settings.secret(this));
-        toast("MTProto secret скопирован");
-    }
-
-    private void regenerateSecret() {
-        boolean wasRunning = ProxyService.running;
-        if (wasRunning) ProxyService.stop(this);
-        Settings.regenerateSecret(this);
-        handler.postDelayed(() -> {
-            if (wasRunning) ProxyService.start(this);
-            toast("Новый secret создан. Переподключи прокси в Telegram.");
-        }, 600);
-    }
-
-    private void copy(String label, String value) {
-        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-        cm.setPrimaryClip(ClipData.newPlainText(label, value));
-    }
-
-    private void showStatus() {
-        String cloud = auth.isSignedIn() ? auth.grxtId() : "гость";
-        String value = "Сервис: " + (ProxyService.running ? "работает" : "выключен") +
-                "\nАдрес: " + Settings.HOST + ":" + Settings.PORT +
-                "\nРежим: MTProto" +
-                "\nМаршрут: " + ProxyService.route +
-                "\nGRXT Auth: " + cloud +
-                (ProxyService.error.isEmpty() ? "" : "\nОшибка: " + ProxyService.error);
-        new AlertDialog.Builder(this)
-                .setTitle("GRXT WS Proxy")
-                .setMessage(value)
-                .setPositiveButton("OK", null)
-                .show();
-    }
-
-    private final Runnable refreshTask = new Runnable() {
-        @Override public void run() {
-            refresh();
-            handler.postDelayed(this, 650);
-        }
-    };
-
-    private void refresh() {
-        boolean on = ProxyService.running;
-        status.setText(on ? "MTProto прокси активен" : "Прокси выключен");
-        status.setTextColor(on ? GREEN : TEXT);
-        String r = ProxyService.route == null ? "" : ProxyService.route.trim();
-        route.setText("Маршрут: " + (r.isEmpty() || "off".equalsIgnoreCase(r) ? (on ? "Auto" : "выключен") : r));
-        details.setText("Локальный адрес: " + Settings.HOST + ":" + Settings.PORT);
-        if (auth.isSignedIn()) {
-            authState.setText("Подключён · " + auth.grxtId() + " · " + auth.email());
-            authState.setTextColor(GREEN);
-        } else {
-            authState.setText("Гостевой режим · GRXT ID: —");
-            authState.setTextColor(MUTED);
-        }
-        toggle.setText(on ? "ВЫКЛЮЧИТЬ ПРОКСИ" : "ВКЛЮЧИТЬ ПРОКСИ");
-        toggle.setBackground(rounded(on ? BLUE_2 : BLUE, 18));
-        telegram.setAlpha(on ? 1f : 0.75f);
-        error.setText(ProxyService.error.isEmpty() ? "" : "Ошибка: " + ProxyService.error);
-    }
-
     private LinearLayout card() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -328,6 +366,11 @@ public final class MainActivity extends Activity {
 
     private LinearLayout.LayoutParams matchWrap() {
         return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private void copy(String label, String value) {
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        cm.setPrimaryClip(ClipData.newPlainText(label, value));
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
