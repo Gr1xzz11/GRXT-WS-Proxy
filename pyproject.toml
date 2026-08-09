@@ -4,10 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grxt-ws-proxy"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop-first local Telegram proxy with automatic route recovery"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "tg-ws-proxy @ git+https://github.com/Flowseal/tg-ws-proxy.git@b8a563400805c6993256b2333149fd847cfa5bbf",
+]
 
 [project.scripts]
 grxt-ws-proxy = "grxt_ws_proxy.app:main"
