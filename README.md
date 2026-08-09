@@ -1,51 +1,74 @@
 # GRXT WS Proxy
 
-A desktop-first Telegram local proxy project based on the architecture of Flowseal/tg-ws-proxy.
+Desktop-first local Telegram MTProto → WebSocket/TLS proxy based on the networking engine from Flowseal/tg-ws-proxy.
 
-## Goals
+## Current state
 
-- Reliable Telegram connectivity when direct connections are unavailable or degraded.
-- First-class Linux/GNOME and Windows support.
-- No system-tray dependency.
-- Separate GUI and proxy core so the core can run independently.
-- Automatic route selection, health checks, fallback and recovery.
-- Built-in diagnostics and readable logs.
+The first working integration is now in place:
 
-## Planned architecture
+- normal desktop window, no tray requirement;
+- Linux/GNOME-friendly behavior;
+- GUI and proxy core run as separate processes;
+- real upstream MTProto/WebSocket engine is started by the GRXT core;
+- persistent MTProto secret in `~/.config/grxt-ws-proxy/config.json`;
+- local endpoint defaults to `127.0.0.1:1443`;
+- `tg://proxy` link can be opened directly from the GUI;
+- upstream WebSocket and fallback logic remains available;
+- logs are written to `~/.local/state/grxt-ws-proxy/proxy.log`.
+
+## Install from source
+
+Python 3.11+ and Git are required for the current development build.
+
+```bash
+git clone https://github.com/Gr1xzz11/GRXT-WS-Proxy.git
+cd GRXT-WS-Proxy
+git checkout agent/initial-desktop-core
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+grxt-ws-proxy
+```
+
+The current build pins the upstream networking engine to commit:
+
+`b8a563400805c6993256b2333149fd847cfa5bbf`
+
+## Architecture
 
 ```text
 Telegram Desktop
       |
       v
-Local MTProto endpoint (127.0.0.1:1443)
+127.0.0.1:1443
       |
       v
 GRXT Proxy Core
       |
-      +--> Auto route / health checks
+      v
+Flowseal MTProto/WS engine
       |
-      +--> WebSocket/TLS transport
-      +--> Cloudflare-compatible route
-      +--> Direct fallback (optional)
+      +--> WebSocket/TLS
+      +--> Cloudflare-compatible fallback
+      +--> direct fallback where available
       |
       v
 Telegram DC
 
-GRXT Desktop GUI <---- local control API ----> GRXT Proxy Core
+GRXT Desktop GUI ---- process lifecycle ----> GRXT Proxy Core
 ```
 
-## Desktop behavior
+The GUI intentionally does not depend on a system-tray icon. Closing the GUI stops the core by default; the user can choose to leave the core running in the background.
 
-The application will use a normal desktop window instead of a tray icon. Closing the GUI can either stop the proxy or leave the core running in the background, depending on user settings.
+## Next work
 
-## Status
+- remove the temporary Git dependency by vendoring/refactoring the required MIT-licensed networking modules;
+- add real route health checks and latency measurements;
+- add Auto Route scoring and automatic recovery;
+- expose route/fallback status in the GUI;
+- add systemd user autostart for Linux;
+- add Windows packaging and Linux standalone packaging.
 
-Initial repository scaffold. The upstream networking core and v1.9.1 behavior will be integrated incrementally while the desktop/control layer is redesigned.
+## Upstream and license
 
-## Upstream
-
-Architecture inspired by and intended to reuse compatible MIT-licensed components from:
-
-- Flowseal/tg-ws-proxy
-
-Upstream copyright and license notices must be preserved for reused code.
+Networking behavior is based on MIT-licensed code from Flowseal/tg-ws-proxy. Upstream copyright and license notices must be preserved for reused code.
