@@ -42,11 +42,39 @@ final class MtProtoProxyEngine implements Closeable {
         server.setReuseAddress(true);
         server.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), Settings.PORT));
         running = true;
-        listener.onState("running", "waiting");
+        listener.onState("running", "Auto · проверка маршрута…");
+        pool.execute(this::probeRoute);
         pool.execute(this::acceptLoop);
     }
 
     boolean isRunning() { return running; }
+
+    private void probeRoute() {
+        String target = "149.154.167.220";
+        String[] domains = {
+                "kws4.web.telegram.org",
+                "kws4-1.web.telegram.org",
+                "kws2.web.telegram.org",
+                "kws2-1.web.telegram.org"
+        };
+        for (String domain : domains) {
+            if (!running) return;
+            try (RawWebSocket ws = RawWebSocket.connect(target, domain, 4500)) {
+                listener.onState("running", "Auto · WebSocket готов");
+                return;
+            } catch (IOException e) {
+                Log.d(TAG, "Route probe WS failed " + domain + ": " + e.getMessage());
+            }
+        }
+
+        try (Socket s = new Socket()) {
+            s.connect(new InetSocketAddress("149.154.167.91", 443), 5000);
+            listener.onState("running", "Auto · TCP fallback готов");
+        } catch (IOException e) {
+            listener.onState("running", "Auto · маршрут недоступен");
+            Log.w(TAG, "No route available during startup probe", e);
+        }
+    }
 
     private void acceptLoop() {
         while (running) {
@@ -61,7 +89,7 @@ final class MtProtoProxyEngine implements Closeable {
     }
 
     private void handle(Socket client) {
-        String route = "none";
+        String route = "Сессия Telegram";
         try (Socket c = client) {
             InputStream cin = new BufferedInputStream(c.getInputStream());
             OutputStream cout = new BufferedOutputStream(c.getOutputStream());
@@ -84,7 +112,7 @@ final class MtProtoProxyEngine implements Closeable {
                 for (String domain : domains) {
                     try {
                         ws = RawWebSocket.connect(target, domain, 6000);
-                        route = "WebSocket / " + domain;
+                        route = "WebSocket · DC" + dc;
                         break;
                     } catch (IOException e) {
                         Log.w(TAG, "WS failed " + domain + ": " + e.getMessage());
@@ -99,13 +127,13 @@ final class MtProtoProxyEngine implements Closeable {
             } else {
                 String ip = fallbackIp(dc);
                 if (ip == null) throw new IOException("No route for DC" + dc);
-                route = "TCP fallback / DC" + dc;
+                route = "TCP fallback · DC" + dc;
                 listener.onState("running", route);
                 bridgeTcp(cin, cout, ip, relayInit, crypto);
             }
         } catch (Exception e) {
             Log.w(TAG, "session closed: " + e.getMessage());
-            listener.onState(running ? "running" : "stopped", route + " / " + e.getClass().getSimpleName());
+            if (running) listener.onState("running", "Auto · готов к подключению");
         }
     }
 
