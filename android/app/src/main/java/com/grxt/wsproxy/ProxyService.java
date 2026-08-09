@@ -10,13 +10,13 @@ public final class ProxyService extends Service {
     public static final String ACTION_START = "com.grxt.wsproxy.START";
     public static final String ACTION_STOP = "com.grxt.wsproxy.STOP";
     private static final String CHANNEL = "grxt_proxy";
-    private static final int NOTIFICATION_ID = 1443;
+    private static final int NOTIFICATION_ID = 1080;
 
     public static volatile boolean running = false;
     public static volatile String route = "off";
     public static volatile String error = "";
 
-    private MtProtoProxyEngine engine;
+    private Socks5ProxyEngine engine;
 
     public static void start(Context context) {
         Intent i = new Intent(context, ProxyService.class).setAction(ACTION_START);
@@ -25,6 +25,11 @@ public final class ProxyService extends Service {
 
     public static void stop(Context context) {
         context.startService(new Intent(context, ProxyService.class).setAction(ACTION_STOP));
+    }
+
+    public static void restart(Context context) {
+        stop(context);
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> start(context), 350);
     }
 
     @Override public void onCreate() {
@@ -44,11 +49,12 @@ public final class ProxyService extends Service {
         if (engine == null || !engine.isRunning()) {
             try {
                 error = "";
-                engine = new MtProtoProxyEngine(Settings.secret(this), (state, activeRoute) -> {
+                engine = new Socks5ProxyEngine((state, activeRoute) -> {
                     running = "running".equals(state);
                     route = activeRoute;
                     NotificationManager nm = getSystemService(NotificationManager.class);
-                    if (nm != null) nm.notify(NOTIFICATION_ID, notification(running ? "Прокси работает · " + activeRoute : "Прокси выключен"));
+                    if (nm != null) nm.notify(NOTIFICATION_ID,
+                            notification(running ? "Работает · " + activeRoute : "Прокси выключен"));
                 });
                 engine.start();
                 running = true;
@@ -66,9 +72,11 @@ public final class ProxyService extends Service {
 
     private Notification notification(String text) {
         Intent open = new Intent(this, MainActivity.class);
-        PendingIntent pi = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        PendingIntent pi = PendingIntent.getActivity(this, 0, open,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         Intent stop = new Intent(this, ProxyService.class).setAction(ACTION_STOP);
-        PendingIntent stopPi = PendingIntent.getService(this, 1, stop, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        PendingIntent stopPi = PendingIntent.getService(this, 1, stop,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_sys_upload_done)
                 .setContentTitle("GRXT WS Proxy")
@@ -81,8 +89,9 @@ public final class ProxyService extends Service {
 
     private void createChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel ch = new NotificationChannel(CHANNEL, "GRXT WS Proxy", NotificationManager.IMPORTANCE_LOW);
-            ch.setDescription("Состояние локального Telegram-прокси");
+            NotificationChannel ch = new NotificationChannel(CHANNEL, "GRXT WS Proxy",
+                    NotificationManager.IMPORTANCE_LOW);
+            ch.setDescription("Состояние локального Telegram SOCKS5-прокси");
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
         }
     }
