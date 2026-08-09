@@ -164,14 +164,32 @@ public final class MainActivity extends Activity {
     }
 
     private void connectTelegram() {
+        telegram.setEnabled(false);
+        telegram.setText("Подготовка прокси…");
         if (!ProxyService.running) ProxyService.start(this);
-        handler.postDelayed(() -> {
+        waitForProxyAndOpen(0);
+    }
+
+    private void waitForProxyAndOpen(int attempt) {
+        if (ProxyService.running) {
+            telegram.setText("Подключить Telegram");
+            telegram.setEnabled(true);
             Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(Settings.telegramLink(this)));
-            try { startActivity(i); }
-            catch (ActivityNotFoundException e) {
+            try {
+                startActivity(i);
+            } catch (ActivityNotFoundException e) {
                 Toast.makeText(this, "Telegram не найден", Toast.LENGTH_LONG).show();
             }
-        }, 450);
+            return;
+        }
+
+        if (attempt >= 30) {
+            telegram.setText("Подключить Telegram");
+            telegram.setEnabled(true);
+            Toast.makeText(this, "Прокси не успел запуститься. Проверь ошибку на экране.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        handler.postDelayed(() -> waitForProxyAndOpen(attempt + 1), 150);
     }
 
     private final Runnable refreshTask = new Runnable() {
@@ -192,18 +210,26 @@ public final class MainActivity extends Activity {
             routeHint.setText("Нажми большую синюю кнопку, чтобы запустить прокси.");
         } else if (activeRoute.isEmpty() || "off".equalsIgnoreCase(activeRoute)) {
             route.setText("Маршрут: Auto");
-            routeHint.setText("Проверяем доступность WebSocket/TCP…");
+            routeHint.setText("Проверяем доступность маршрутов…");
         } else {
             route.setText("Маршрут: " + activeRoute);
-            if (activeRoute.contains("проверка")) routeHint.setText("Проверяем доступность WebSocket/TCP…");
-            else if (activeRoute.contains("недоступен")) routeHint.setText("Маршрут не найден. Проверь интернет или открой ошибку ниже.");
-            else routeHint.setText("Маршрут готов. Теперь можно подключать Telegram.");
+            if (activeRoute.contains("поиск") || activeRoute.contains("провер")) {
+                routeHint.setText("Ищем рабочий WebSocket/Cloudflare маршрут…");
+            } else if (activeRoute.contains("Ошибка") || activeRoute.contains("недоступ")) {
+                routeHint.setText("Этот маршрут не сработал. GRXT попробует другой при новом соединении Telegram.");
+            } else if (activeRoute.contains("локальный порт")) {
+                routeHint.setText("Локальный MTProto готов. Можно нажимать «Подключить Telegram».");
+            } else {
+                routeHint.setText("Маршрут активен. Telegram должен выйти в онлайн.");
+            }
         }
 
         toggle.setText(on ? "ВЫКЛЮЧИТЬ ПРОКСИ" : "ВКЛЮЧИТЬ ПРОКСИ");
         toggle.setBackground(rounded(on ? Color.rgb(43, 52, 72) : BLUE, 18));
-        telegram.setEnabled(on);
-        telegram.setAlpha(on ? 1f : 0.55f);
+        if (!"Подготовка прокси…".contentEquals(telegram.getText())) {
+            telegram.setEnabled(on);
+            telegram.setAlpha(on ? 1f : 0.55f);
+        }
         error.setText(ProxyService.error.isEmpty() ? "" : "Ошибка: " + ProxyService.error);
     }
 
