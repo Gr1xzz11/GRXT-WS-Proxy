@@ -11,6 +11,7 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
@@ -26,7 +27,6 @@ final class MtProtoProxyEngine implements Closeable {
     private static final int PADDED = 0xDDDDDDDD;
     private static final SecureRandom RNG = new SecureRandom();
 
-    // Same fallback pool used by the upstream Flowseal implementation.
     private static final String[] CF_BASE_DOMAINS = {
             "pclead.co.uk", "offshor.co.uk", "cakeisalie.co.uk", "noskomnadzor.co.uk",
             "lovetrue.co.uk", "sorokdva.co.uk", "pyatdesyatdva.co.uk", "kartoshka.co.uk",
@@ -38,6 +38,7 @@ final class MtProtoProxyEngine implements Closeable {
     private final byte[] secret;
     private final Listener listener;
     private final ExecutorService pool = Executors.newCachedThreadPool();
+    private final AtomicInteger sessions = new AtomicInteger();
     private volatile boolean running;
     private ServerSocket server;
 
@@ -50,36 +51,43 @@ final class MtProtoProxyEngine implements Closeable {
         if (running) return;
         server = new ServerSocket();
         server.setReuseAddress(true);
-        server.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), Settings.PORT));
+
+        // IMPORTANT: bind to the exact IPv4 address used in tg://proxy.
+        // InetAddress.getLoopbackAddress() may return ::1 on Android, while
+        // Telegram connects to 127.0.0.1 and would then see a dead port.
+        InetAddress ipv4Loopback = InetAddress.getByName(Settings.HOST);
+        server.bind(new InetSocketAddress(ipv4Loopback, Settings.PORT), 128);
+
         running = true;
-        listener.onState("running", "Auto · локальный порт готов");
-        pool.execute(this::probeRoute);
+        listener.onState("running", "MTProto · 127.0.0.1:" + Settings.PORT + " готов");
         pool.execute(this::acceptLoop);
+        pool.execute(this::probeRoute);
     }
 
     boolean isRunning() { return running; }
 
     private void probeRoute() {
         if (!running) return;
-        try (RawWebSocket ws = tryDirectTelegramWs(4, false, 2200)) {
+        try (RawWebSocket ws = tryDirectTelegramWs(4, false, 4500)) {
             if (ws != null) {
                 listener.onState("running", "Auto · Telegram WebSocket готов");
                 return;
             }
         } catch (Exception ignored) {}
 
-        try (RawWebSocket ws = tryCloudflareWs(4, 1800, 3)) {
+        try (RawWebSocket ws = tryCloudflareWs(4, 3500, 4)) {
             if (ws != null) {
-                listener.onState("running", "Auto · Cloudflare fallback готов");
+                listener.onState("running", "Auto · Cloudflare WebSocket готов");
                 return;
             }
         } catch (Exception ignored) {}
 
         try (Socket s = new Socket()) {
-            s.connect(new InetSocketAddress("149.154.167.91", 443), 2500);
-            listener.onState("running", "Auto · TCP fallback готов");
+            s.setTcpNoDelay(true);
+            s.connect(new InetSocketAddress("149.154.167.91", 443), 4500);
+            listener.onState("running", "Auto · TCP fallback доступен");
         } catch (IOException e) {
-            listener.onState("running", "Auto · маршруты недоступны");
+            listener.onState("running", "Auto · внешний маршрут пока недоступен");
             Log.w(TAG, "No startup route available", e);
         }
     }
@@ -90,8 +98,10 @@ final class MtProtoProxyEngine implements Closeable {
                 Socket client = server.accept();
                 client.setTcpNoDelay(true);
                 client.setKeepAlive(true);
-                client.setSoTimeout(15000);
+                client.setSoTimeout(10000);
                 pool.execute(() -> handle(client));
+            } catch (SocketException e) {
+                if (running) Log.e(TAG, "accept socket failed", e);
             } catch (IOException e) {
                 if (running) Log.e(TAG, "accept failed", e);
             }
@@ -100,9 +110,10 @@ final class MtProtoProxyEngine implements Closeable {
 
     private void handle(Socket client) {
         int dc = 0;
+        int sessionNo = sessions.incrementAndGet();
         try (Socket c = client) {
-            InputStream cin = new BufferedInputStream(c.getInputStream());
-            OutputStream cout = new BufferedOutputStream(c.getOutputStream());
+            InputStream cin = new BufferedInputStream(c.getInputStream(), 64 * 1024);
+            OutputStream cout = new BufferedOutputStream(c.getOutputStream(), 64 * 1024);
             byte[] init = readExact(cin, HANDSHAKE_LEN);
             c.setSoTimeout(0);
 
@@ -113,17 +124,20 @@ final class MtProtoProxyEngine implements Closeable {
             boolean media = hs.dcIndex < 0;
             if (dc < 1 || dc > 5) throw new IOException("unsupported Telegram DC" + dc);
 
+            Log.i(TAG, "session #" + sessionNo + " handshake OK DC" + dc + (media ? " media" : ""));
+            listener.onState("running", "MTProto · DC" + dc + (media ? " media" : "") + " · подключение…");
+
             byte[] relayInit = generateRelayInit(hs.protoTag, hs.dcIndex);
             CryptoContext crypto = buildCrypto(init, relayInit);
             PacketSplitter splitter = new PacketSplitter(relayInit, hs.protocol);
 
-            RawWebSocket ws = tryDirectTelegramWs(dc, media, 2600);
+            RawWebSocket ws = tryDirectTelegramWs(dc, media, 5000);
             String route = null;
             if (ws != null) route = "Telegram WS · DC" + dc;
 
             if (ws == null) {
-                listener.onState("running", "Cloudflare · поиск маршрута для DC" + dc + "…");
-                ws = tryCloudflareWs(dc, 2200, 6);
+                listener.onState("running", "Cloudflare · поиск DC" + dc + "…");
+                ws = tryCloudflareWs(dc, 3500, 8);
                 if (ws != null) route = "Cloudflare WS · DC" + dc;
             }
 
@@ -142,8 +156,10 @@ final class MtProtoProxyEngine implements Closeable {
             bridgeTcp(cin, cout, ip, relayInit, crypto);
         } catch (Exception e) {
             String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-            Log.w(TAG, "session DC" + dc + " closed: " + message, e);
+            Log.w(TAG, "session #" + sessionNo + " DC" + dc + " closed: " + message, e);
             if (running) listener.onState("running", "Ошибка DC" + (dc == 0 ? "?" : dc) + " · " + shortError(message));
+        } finally {
+            sessions.decrementAndGet();
         }
     }
 
@@ -172,7 +188,6 @@ final class MtProtoProxyEngine implements Closeable {
             if (!running) return null;
             String domain = "kws" + dc + "." + bases.get(i);
             try {
-                // CF proxy is addressed by its own hostname, unlike Telegram WS which uses a DC IP + SNI.
                 return RawWebSocket.connect(domain, domain, timeoutMs, "/apiws");
             } catch (IOException e) {
                 Log.d(TAG, "CF WS failed " + domain + ": " + e.getMessage());
@@ -200,6 +215,7 @@ final class MtProtoProxyEngine implements Closeable {
                 Log.d(TAG, "client->ws ended: " + e.getMessage());
             }
         });
+
         Future<?> down = pool.submit(() -> {
             try {
                 byte[] data;
@@ -215,25 +231,38 @@ final class MtProtoProxyEngine implements Closeable {
                 Log.d(TAG, "ws->client ended: " + e.getMessage());
             }
         });
-        waitEither(up, down);
+
+        Future<?> keepAlive = pool.submit(() -> {
+            try {
+                while (!Thread.currentThread().isInterrupted()) {
+                    Thread.sleep(20000);
+                    ws.sendPing();
+                }
+            } catch (Exception e) {
+                Log.d(TAG, "ws keepalive ended: " + e.getMessage());
+            }
+        });
+
+        waitAny(up, down, keepAlive);
         up.cancel(true);
         down.cancel(true);
+        keepAlive.cancel(true);
     }
 
     private void bridgeTcp(InputStream cin, OutputStream cout, String ip,
                            byte[] relayInit, CryptoContext crypto) throws Exception {
         try (Socket remote = new Socket()) {
-            remote.connect(new InetSocketAddress(ip, 443), 4500);
             remote.setTcpNoDelay(true);
             remote.setKeepAlive(true);
-            InputStream rin = new BufferedInputStream(remote.getInputStream());
-            OutputStream rout = new BufferedOutputStream(remote.getOutputStream());
+            remote.connect(new InetSocketAddress(ip, 443), 6500);
+            InputStream rin = new BufferedInputStream(remote.getInputStream(), 64 * 1024);
+            OutputStream rout = new BufferedOutputStream(remote.getOutputStream(), 64 * 1024);
             rout.write(relayInit);
             rout.flush();
 
             Future<?> up = pool.submit(() -> forwardTcp(cin, rout, crypto.clientDec, crypto.telegramEnc));
             Future<?> down = pool.submit(() -> forwardTcp(rin, cout, crypto.telegramDec, crypto.clientEnc));
-            waitEither(up, down);
+            waitAny(up, down);
             up.cancel(true);
             down.cancel(true);
         }
@@ -255,8 +284,11 @@ final class MtProtoProxyEngine implements Closeable {
         } catch (Exception ignored) {}
     }
 
-    private static void waitEither(Future<?> a, Future<?> b) throws InterruptedException {
-        while (!a.isDone() && !b.isDone()) Thread.sleep(40);
+    private static void waitAny(Future<?>... futures) throws InterruptedException {
+        while (true) {
+            for (Future<?> f : futures) if (f.isDone()) return;
+            Thread.sleep(40);
+        }
     }
 
     private Handshake parseHandshake(byte[] handshake) throws Exception {
@@ -280,10 +312,12 @@ final class MtProtoProxyEngine implements Closeable {
                     Arrays.equals(first4, "POST".getBytes(StandardCharsets.US_ASCII)) ||
                     Arrays.equals(first4, "GET ".getBytes(StandardCharsets.US_ASCII)) ||
                     Arrays.equals(first4, new byte[]{(byte)0xee,(byte)0xee,(byte)0xee,(byte)0xee}) ||
-                    Arrays.equals(first4, new byte[]{(byte)0xdd,(byte)0xdd,(byte)0xdd,(byte)0xdd})) continue;
+                    Arrays.equals(first4, new byte[]{(byte)0xdd,(byte)0xdd,(byte)0xdd,(byte)0xdd}) ||
+                    (rnd[0] == 0x16 && rnd[1] == 0x03 && rnd[2] == 0x01 && rnd[3] == 0x02)) continue;
             if (rnd[4] == 0 && rnd[5] == 0 && rnd[6] == 0 && rnd[7] == 0) continue;
             break;
         }
+
         byte[] key = Arrays.copyOfRange(rnd, 8, 40);
         byte[] iv = Arrays.copyOfRange(rnd, 40, 56);
         Cipher c = aesCtr(key, iv);
@@ -342,7 +376,7 @@ final class MtProtoProxyEngine implements Closeable {
 
     private static String shortError(String message) {
         String m = message.replace('\n', ' ').replace('\r', ' ').trim();
-        return m.length() > 52 ? m.substring(0, 52) + "…" : m;
+        return m.length() > 72 ? m.substring(0, 72) + "…" : m;
     }
 
     @Override public void close() {

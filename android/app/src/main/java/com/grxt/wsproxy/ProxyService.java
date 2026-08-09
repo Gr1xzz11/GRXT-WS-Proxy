@@ -10,13 +10,13 @@ public final class ProxyService extends Service {
     public static final String ACTION_START = "com.grxt.wsproxy.START";
     public static final String ACTION_STOP = "com.grxt.wsproxy.STOP";
     private static final String CHANNEL = "grxt_proxy";
-    private static final int NOTIFICATION_ID = 1080;
+    private static final int NOTIFICATION_ID = 1443;
 
     public static volatile boolean running = false;
     public static volatile String route = "off";
     public static volatile String error = "";
 
-    private Socks5ProxyEngine engine;
+    private MtProtoProxyEngine engine;
 
     public static void start(Context context) {
         Intent i = new Intent(context, ProxyService.class).setAction(ACTION_START);
@@ -29,7 +29,8 @@ public final class ProxyService extends Service {
 
     public static void restart(Context context) {
         stop(context);
-        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> start(context), 350);
+        new android.os.Handler(android.os.Looper.getMainLooper())
+                .postDelayed(() -> start(context), 500);
     }
 
     @Override public void onCreate() {
@@ -45,16 +46,19 @@ public final class ProxyService extends Service {
             return START_NOT_STICKY;
         }
 
-        startForeground(NOTIFICATION_ID, notification("Запуск прокси…"));
+        startForeground(NOTIFICATION_ID, notification("Запуск MTProto-прокси…"));
         if (engine == null || !engine.isRunning()) {
             try {
                 error = "";
-                engine = new Socks5ProxyEngine((state, activeRoute) -> {
+                route = "Запуск…";
+                engine = new MtProtoProxyEngine(Settings.secret(this), (state, activeRoute) -> {
                     running = "running".equals(state);
-                    route = activeRoute;
+                    route = activeRoute == null ? "" : activeRoute;
                     NotificationManager nm = getSystemService(NotificationManager.class);
-                    if (nm != null) nm.notify(NOTIFICATION_ID,
-                            notification(running ? "Работает · " + activeRoute : "Прокси выключен"));
+                    if (nm != null) {
+                        nm.notify(NOTIFICATION_ID, notification(
+                                running ? "MTProto работает · " + route : "Прокси выключен"));
+                    }
                 });
                 engine.start();
                 running = true;
@@ -91,7 +95,7 @@ public final class ProxyService extends Service {
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel(CHANNEL, "GRXT WS Proxy",
                     NotificationManager.IMPORTANCE_LOW);
-            ch.setDescription("Состояние локального Telegram SOCKS5-прокси");
+            ch.setDescription("Состояние локального Telegram MTProto-прокси");
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
         }
     }

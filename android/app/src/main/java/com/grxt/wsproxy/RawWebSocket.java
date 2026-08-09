@@ -1,9 +1,10 @@
 package com.grxt.wsproxy;
 
 import java.io.*;
-import java.net.Socket;
+import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.*;
 import java.util.Base64;
 
 import javax.net.ssl.SNIHostName;
@@ -21,8 +22,8 @@ final class RawWebSocket implements Closeable {
 
     private RawWebSocket(Socket socket) throws IOException {
         this.socket = socket;
-        this.in = new BufferedInputStream(socket.getInputStream());
-        this.out = new BufferedOutputStream(socket.getOutputStream());
+        this.in = new BufferedInputStream(socket.getInputStream(), 64 * 1024);
+        this.out = new BufferedOutputStream(socket.getOutputStream(), 64 * 1024);
     }
 
     static RawWebSocket connect(String targetHost, String domain, int timeoutMs) throws IOException {
@@ -30,44 +31,74 @@ final class RawWebSocket implements Closeable {
     }
 
     static RawWebSocket connect(String targetHost, String domain, int timeoutMs, String path) throws IOException {
-        Socket raw = new Socket();
+        Socket raw = connectTcpIPv4First(targetHost, 443, timeoutMs);
         raw.setTcpNoDelay(true);
-        raw.connect(new java.net.InetSocketAddress(targetHost, 443), timeoutMs);
+        raw.setKeepAlive(true);
         raw.setSoTimeout(timeoutMs);
 
-        SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
-        SSLSocket ssl = (SSLSocket) factory.createSocket(raw, domain, 443, true);
-        SSLParameters params = ssl.getSSLParameters();
-        params.setServerNames(java.util.Collections.singletonList(new SNIHostName(domain)));
-        params.setEndpointIdentificationAlgorithm("HTTPS");
-        ssl.setSSLParameters(params);
-        ssl.startHandshake();
+        try {
+            SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+            SSLSocket ssl = (SSLSocket) factory.createSocket(raw, domain, 443, true);
+            SSLParameters params = ssl.getSSLParameters();
+            params.setServerNames(Collections.singletonList(new SNIHostName(domain)));
+            params.setEndpointIdentificationAlgorithm("HTTPS");
+            ssl.setSSLParameters(params);
+            ssl.startHandshake();
 
-        RawWebSocket ws = new RawWebSocket(ssl);
-        byte[] keyBytes = new byte[16];
-        RNG.nextBytes(keyBytes);
-        String key = Base64.getEncoder().encodeToString(keyBytes);
-        String request = "GET " + path + " HTTP/1.1\r\n" +
-                "Host: " + domain + "\r\n" +
-                "Upgrade: websocket\r\n" +
-                "Connection: Upgrade\r\n" +
-                "Sec-WebSocket-Key: " + key + "\r\n" +
-                "Sec-WebSocket-Version: 13\r\n" +
-                "Sec-WebSocket-Protocol: binary\r\n\r\n";
-        synchronized (ws.writeLock) {
-            ws.out.write(request.getBytes(StandardCharsets.US_ASCII));
-            ws.out.flush();
-        }
+            RawWebSocket ws = new RawWebSocket(ssl);
+            byte[] keyBytes = new byte[16];
+            RNG.nextBytes(keyBytes);
+            String key = Base64.getEncoder().encodeToString(keyBytes);
+            String request = "GET " + path + " HTTP/1.1\r\n" +
+                    "Host: " + domain + "\r\n" +
+                    "Upgrade: websocket\r\n" +
+                    "Connection: Upgrade\r\n" +
+                    "Sec-WebSocket-Key: " + key + "\r\n" +
+                    "Sec-WebSocket-Version: 13\r\n" +
+                    "Sec-WebSocket-Protocol: binary\r\n\r\n";
+            synchronized (ws.writeLock) {
+                ws.out.write(request.getBytes(StandardCharsets.US_ASCII));
+                ws.out.flush();
+            }
 
-        String status = readAsciiLine(ws.in);
-        if (status == null || !status.contains(" 101 ")) {
-            ws.close();
-            throw new IOException("WebSocket handshake failed: " + status);
+            String status = readAsciiLine(ws.in);
+            if (status == null || !status.contains(" 101 ")) {
+                ws.close();
+                throw new IOException("WebSocket handshake failed: " + status);
+            }
+            String line;
+            while ((line = readAsciiLine(ws.in)) != null && !line.isEmpty()) {}
+            ssl.setSoTimeout(0);
+            return ws;
+        } catch (IOException e) {
+            try { raw.close(); } catch (IOException ignored) {}
+            throw e;
         }
-        String line;
-        while ((line = readAsciiLine(ws.in)) != null && !line.isEmpty()) {}
-        ssl.setSoTimeout(0);
-        return ws;
+    }
+
+    private static Socket connectTcpIPv4First(String host, int port, int timeoutMs) throws IOException {
+        InetAddress[] all = InetAddress.getAllByName(host);
+        List<InetAddress> addresses = new ArrayList<>(Arrays.asList(all));
+        addresses.sort((a, b) -> {
+            boolean a4 = a instanceof Inet4Address;
+            boolean b4 = b instanceof Inet4Address;
+            return a4 == b4 ? 0 : (a4 ? -1 : 1);
+        });
+
+        IOException last = null;
+        for (InetAddress address : addresses) {
+            Socket s = new Socket();
+            try {
+                s.setTcpNoDelay(true);
+                s.setKeepAlive(true);
+                s.connect(new InetSocketAddress(address, port), timeoutMs);
+                return s;
+            } catch (IOException e) {
+                last = e;
+                try { s.close(); } catch (IOException ignored) {}
+            }
+        }
+        throw last != null ? last : new UnknownHostException(host);
     }
 
     void sendBinary(byte[] data) throws IOException {
@@ -77,11 +108,21 @@ final class RawWebSocket implements Closeable {
         }
     }
 
+    void sendPing() throws IOException {
+        synchronized (writeLock) {
+            if (closed) throw new EOFException("WebSocket closed");
+            writeFrameLocked(0x9, new byte[0]);
+        }
+    }
+
     byte[] receiveBinary() throws IOException {
+        ByteArrayOutputStream fragmented = null;
         while (!closed) {
             int a = in.read();
             int b = in.read();
             if (a < 0 || b < 0) throw new EOFException();
+
+            boolean fin = (a & 0x80) != 0;
             int opcode = a & 0x0f;
             long len = b & 0x7f;
             if (len == 126) len = ((long) readU8() << 8) | readU8();
@@ -90,13 +131,24 @@ final class RawWebSocket implements Closeable {
                 for (int i = 0; i < 8; i++) len = (len << 8) | readU8();
             }
             if (len > Integer.MAX_VALUE) throw new IOException("WS frame too large");
+
             byte[] mask = null;
             if ((b & 0x80) != 0) mask = readExact(4);
             byte[] payload = readExact((int) len);
             if (mask != null) {
                 for (int i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
             }
-            if (opcode == 0x8) { closed = true; return null; }
+
+            if (opcode == 0x8) {
+                synchronized (writeLock) {
+                    if (!closed) {
+                        try { writeFrameLocked(0x8, payload.length >= 2 ? Arrays.copyOf(payload, 2) : new byte[0]); }
+                        catch (IOException ignored) {}
+                    }
+                }
+                closed = true;
+                return null;
+            }
             if (opcode == 0x9) {
                 synchronized (writeLock) {
                     if (!closed) writeFrameLocked(0xA, payload);
@@ -104,7 +156,18 @@ final class RawWebSocket implements Closeable {
                 continue;
             }
             if (opcode == 0xA) continue;
-            if (opcode == 0x1 || opcode == 0x2 || opcode == 0x0) return payload;
+
+            if (opcode == 0x1 || opcode == 0x2) {
+                if (fin) return payload;
+                fragmented = new ByteArrayOutputStream(Math.max(payload.length * 2, 1024));
+                fragmented.write(payload);
+                continue;
+            }
+
+            if (opcode == 0x0 && fragmented != null) {
+                fragmented.write(payload);
+                if (fin) return fragmented.toByteArray();
+            }
         }
         return null;
     }

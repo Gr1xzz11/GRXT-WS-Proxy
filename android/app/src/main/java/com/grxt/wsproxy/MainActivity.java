@@ -60,7 +60,7 @@ public final class MainActivity extends Activity {
 
         TextView brand = text("GRXT WS Proxy", 30, true, TEXT);
         root.addView(brand);
-        TextView sub = text("Локальный Telegram proxy · Android", 14, false, MUTED);
+        TextView sub = text("Локальный Telegram MTProto · Android", 14, false, MUTED);
         add(root, sub, 0, dp(5), 0, dp(20));
 
         LinearLayout statusCard = card();
@@ -69,9 +69,9 @@ public final class MainActivity extends Activity {
         statusCard.addView(status);
         route = text("Маршрут: выключен", 15, true, TEXT);
         add(statusCard, route, 0, dp(13), 0, 0);
-        details = text("Локальный адрес: 127.0.0.1:1080", 13, false, MUTED);
+        details = text("Локальный адрес: 127.0.0.1:1443", 13, false, MUTED);
         add(statusCard, details, 0, dp(7), 0, 0);
-        TextView core = text("Режим: SOCKS5 → WebSocket/TLS → Telegram DC", 13, false, MUTED);
+        TextView core = text("Режим: MTProto → WebSocket/TLS → Telegram DC", 13, false, MUTED);
         add(statusCard, core, 0, dp(5), 0, 0);
         root.addView(statusCard, matchWrap());
 
@@ -79,7 +79,7 @@ public final class MainActivity extends Activity {
         toggle.setOnClickListener(v -> {
             toggle.setEnabled(false);
             if (ProxyService.running) ProxyService.stop(this); else ProxyService.start(this);
-            handler.postDelayed(() -> { refresh(); toggle.setEnabled(true); }, 500);
+            handler.postDelayed(() -> { refresh(); toggle.setEnabled(true); }, 550);
         });
         LinearLayout.LayoutParams big = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(76));
         big.setMargins(0, dp(18), 0, 0);
@@ -98,10 +98,13 @@ public final class MainActivity extends Activity {
         LinearLayout grid = new LinearLayout(this);
         grid.setOrientation(LinearLayout.VERTICAL);
         addActionRow(grid,
-                action("РЕСТАРТ", v -> { ProxyService.restart(this); toast("Прокси перезапускается"); }),
+                action("РЕСТАРТ", v -> { ProxyService.restart(this); toast("MTProto перезапускается"); }),
                 action("ПРОВЕРИТЬ МАРШРУТ", v -> { ProxyService.restart(this); toast("Маршруты проверяются заново"); }));
         addActionRow(grid,
                 action("СКОПИРОВАТЬ АДРЕС", v -> copyAddress()),
+                action("СКОПИРОВАТЬ SECRET", v -> copySecret()));
+        addActionRow(grid,
+                action("НОВЫЙ SECRET", v -> regenerateSecret()),
                 action("СТАТУС", v -> showStatus()));
         addActionRow(grid,
                 action("ОТКРЫТЬ TELEGRAM", v -> connectTelegram()),
@@ -112,18 +115,20 @@ public final class MainActivity extends Activity {
         check.setPadding(dp(18), dp(16), dp(18), dp(16));
         TextView ct = text("Текущее состояние", 17, true, TEXT);
         check.addView(ct);
-        TextView c1 = text("WebSocket: автоматический выбор", 13, false, MUTED);
+        TextView c1 = text("MTProto listener: 127.0.0.1:1443", 13, false, MUTED);
         add(check, c1, 0, dp(10), 0, 0);
-        TextView c2 = text("Cloudflare: резервный маршрут", 13, false, MUTED);
+        TextView c2 = text("WebSocket: прямой Telegram маршрут", 13, false, MUTED);
         add(check, c2, 0, dp(5), 0, 0);
-        TextView c3 = text("TCP: последний fallback", 13, false, MUTED);
+        TextView c3 = text("Cloudflare: резервный WebSocket маршрут", 13, false, MUTED);
         add(check, c3, 0, dp(5), 0, 0);
+        TextView c4 = text("TCP: последний fallback", 13, false, MUTED);
+        add(check, c4, 0, dp(5), 0, 0);
         add(root, check, 0, dp(18), 0, 0);
 
         error = text("", 13, true, RED);
         add(root, error, 0, dp(14), 0, 0);
 
-        TextView note = text("GRXT сначала пробует WebSocket, затем Cloudflare, затем обычный TCP. Telegram подключается к локальному SOCKS5 без отдельного MTProxy-secret.", 12, false, MUTED);
+        TextView note = text("Telegram подключается к локальному MTProto на 127.0.0.1:1443. Secret хранится только на устройстве. GRXT сам выбирает WebSocket, Cloudflare или TCP fallback.", 12, false, MUTED);
         note.setLineSpacing(0, 1.15f);
         add(root, note, 0, dp(15), 0, 0);
 
@@ -176,7 +181,7 @@ public final class MainActivity extends Activity {
         if (!ProxyService.running) {
             ProxyService.start(this);
             telegram.setEnabled(false);
-            telegram.setText("ЗАПУСК ПРОКСИ…");
+            telegram.setText("ЗАПУСК MTProto…");
             waitAndOpenTelegram(0);
         } else {
             openTelegram();
@@ -185,18 +190,21 @@ public final class MainActivity extends Activity {
 
     private void waitAndOpenTelegram(int n) {
         if (ProxyService.running) {
-            telegram.setEnabled(true);
-            telegram.setText("ПОДКЛЮЧИТЬ TELEGRAM");
-            openTelegram();
+            // Give the exact 127.0.0.1 listener a short moment after service state flips.
+            handler.postDelayed(() -> {
+                telegram.setEnabled(true);
+                telegram.setText("ПОДКЛЮЧИТЬ TELEGRAM");
+                openTelegram();
+            }, 250);
             return;
         }
-        if (n >= 40) {
+        if (n >= 50) {
             telegram.setEnabled(true);
             telegram.setText("ПОДКЛЮЧИТЬ TELEGRAM");
-            toast("Прокси не запустился. Проверь ошибку на главном экране.");
+            toast("MTProto не запустился. Проверь ошибку на главном экране.");
             return;
         }
-        handler.postDelayed(() -> waitAndOpenTelegram(n + 1), 125);
+        handler.postDelayed(() -> waitAndOpenTelegram(n + 1), 120);
     }
 
     private void openTelegram() {
@@ -206,18 +214,39 @@ public final class MainActivity extends Activity {
     }
 
     private void copyAddress() {
-        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-        cm.setPrimaryClip(ClipData.newPlainText("GRXT proxy", Settings.HOST + ":" + Settings.PORT));
+        copy("GRXT MTProto address", Settings.HOST + ":" + Settings.PORT);
         toast("Скопировано: " + Settings.HOST + ":" + Settings.PORT);
     }
 
+    private void copySecret() {
+        copy("GRXT MTProto secret", Settings.secret(this));
+        toast("MTProto secret скопирован");
+    }
+
+    private void regenerateSecret() {
+        boolean wasRunning = ProxyService.running;
+        if (wasRunning) ProxyService.stop(this);
+        Settings.regenerateSecret(this);
+        handler.postDelayed(() -> {
+            if (wasRunning) ProxyService.start(this);
+            toast("Новый secret создан. Переподключи прокси в Telegram.");
+        }, 600);
+    }
+
+    private void copy(String label, String value) {
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        cm.setPrimaryClip(ClipData.newPlainText(label, value));
+    }
+
     private void showStatus() {
-        String text = "Сервис: " + (ProxyService.running ? "работает" : "выключен") +
+        String value = "Сервис: " + (ProxyService.running ? "работает" : "выключен") +
+                "\nАдрес: " + Settings.HOST + ":" + Settings.PORT +
+                "\nРежим: MTProto" +
                 "\nМаршрут: " + ProxyService.route +
                 (ProxyService.error.isEmpty() ? "" : "\nОшибка: " + ProxyService.error);
         new AlertDialog.Builder(this)
                 .setTitle("GRXT WS Proxy")
-                .setMessage(text)
+                .setMessage(value)
                 .setPositiveButton("OK", null)
                 .show();
     }
@@ -231,7 +260,7 @@ public final class MainActivity extends Activity {
 
     private void refresh() {
         boolean on = ProxyService.running;
-        status.setText(on ? "Прокси активен" : "Прокси выключен");
+        status.setText(on ? "MTProto прокси активен" : "Прокси выключен");
         status.setTextColor(on ? GREEN : TEXT);
         String r = ProxyService.route == null ? "" : ProxyService.route.trim();
         route.setText("Маршрут: " + (r.isEmpty() || "off".equalsIgnoreCase(r) ? (on ? "Auto" : "выключен") : r));
