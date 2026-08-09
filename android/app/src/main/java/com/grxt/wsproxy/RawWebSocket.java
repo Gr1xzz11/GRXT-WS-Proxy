@@ -26,6 +26,10 @@ final class RawWebSocket implements Closeable {
     }
 
     static RawWebSocket connect(String targetHost, String domain, int timeoutMs) throws IOException {
+        return connect(targetHost, domain, timeoutMs, "/apiws");
+    }
+
+    static RawWebSocket connect(String targetHost, String domain, int timeoutMs, String path) throws IOException {
         Socket raw = new Socket();
         raw.setTcpNoDelay(true);
         raw.connect(new java.net.InetSocketAddress(targetHost, 443), timeoutMs);
@@ -43,7 +47,7 @@ final class RawWebSocket implements Closeable {
         byte[] keyBytes = new byte[16];
         RNG.nextBytes(keyBytes);
         String key = Base64.getEncoder().encodeToString(keyBytes);
-        String request = "GET /apiws HTTP/1.1\r\n" +
+        String request = "GET " + path + " HTTP/1.1\r\n" +
                 "Host: " + domain + "\r\n" +
                 "Upgrade: websocket\r\n" +
                 "Connection: Upgrade\r\n" +
