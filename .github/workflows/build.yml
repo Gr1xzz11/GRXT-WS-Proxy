@@ -1,0 +1,48 @@
+name: Build GRXT WS Proxy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, agent/initial-desktop-core]
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: GRXT-WS-Proxy-linux-x64
+          - os: windows-latest
+            artifact: GRXT-WS-Proxy-windows-x64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Linux system dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install . pyinstaller
+      - name: Smoke test imports
+        run: python -c "from grxt_ws_proxy.settings import load_settings; from grxt_ws_proxy.core.upstream import UpstreamSettings; print(load_settings().telegram_link)"
+      - name: Build
+        run: >-
+          pyinstaller --noconfirm --clean --windowed --onefile
+          --name GRXT-WS-Proxy
+          --collect-all proxy
+          --collect-all grxt_ws_proxy
+          launcher.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/GRXT-WS-Proxy
+            dist/GRXT-WS-Proxy.exe
+          if-no-files-found: error
