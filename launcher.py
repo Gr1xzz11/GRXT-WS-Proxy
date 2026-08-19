@@ -10,7 +10,17 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 try:
-    from grxt_ws_proxy.app import main
+    # In a PyInstaller one-file build sys.executable points back to this EXE.
+    # app.py starts the core as: <exe> -m grxt_ws_proxy.core.service.
+    # Route that invocation directly to the core instead of opening another GUI.
+    core_requested = (
+        "--core" in sys.argv[1:]
+        or sys.argv[1:3] == ["-m", "grxt_ws_proxy.core.service"]
+    )
+    if core_requested:
+        from grxt_ws_proxy.core.service import main
+    else:
+        from grxt_ws_proxy.app import main
 except ModuleNotFoundError as exc:
     if exc.name == "proxy":
         raise SystemExit(
