@@ -1,6 +1,5 @@
 name: Build GRXT WS Proxy
 
-# Manual build trigger
 on:
   workflow_dispatch:
   push:
